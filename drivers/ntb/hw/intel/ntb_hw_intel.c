@@ -2987,14 +2987,30 @@ static void intel_ntb_exchange_msix(struct work_struct *work)
 out:
 	rc = pci_read_config_word(ndev->ntb.pdev,
 				  XEON_LINK_STATUS_OFFSET, &reg_val);
-	if (rc || (reg_val != ndev->lnk_sta)) {
+	if (rc)
+		goto link_down;
+
+	if (NTB_LNK_STA_TRAIN(reg_val)) {
 		ndev->lnk_sta = reg_val;
-		intel_ntb_clear_spads(ndev);
+		schedule_delayed_work(&ndev->peer_msix_work,
+				msecs_to_jiffies(NTB_HW_LINK_DOWN_TIMEOUT));
 		return;
+	}
+
+	if ((reg_val != ndev->lnk_sta) || !NTB_LNK_STA_ACTIVE(reg_val)) {
+		ndev->lnk_sta = reg_val;
+		goto link_down;
 	}
 
 	schedule_delayed_work(&ndev->peer_msix_work,
 			      msecs_to_jiffies(NTB_HW_LINK_DOWN_TIMEOUT));
+	return;
+
+link_down:
+		/* link down, clear everything */
+		intel_ntb_clear_spads(ndev);
+		ndev->peer_msix_done = 0;
+
 }
 
 static inline void ndev_init_struct(struct intel_ntb_dev *ndev,
