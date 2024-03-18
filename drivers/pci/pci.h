@@ -878,4 +878,6 @@ struct pci_devres *find_pci_dr(struct pci_dev *pdev);
 	(PCI_CONF1_ADDRESS(bus, dev, func, reg) | \
 	 PCI_CONF1_EXT_REG(reg))
 
+#define MMIO_RESOURCE_NONE	((resource_size_t)-1)
+
 #endif /* DRIVERS_PCI_H */

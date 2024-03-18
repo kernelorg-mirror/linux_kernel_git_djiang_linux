@@ -4,6 +4,7 @@
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/pci.h>
+#include <linux/cxl.h>
 #include <cxlmem.h>
 #include <cxlpci.h>
 #include <pmu.h>
@@ -578,3 +579,44 @@ resource_size_t cxl_rcd_component_reg_phys(struct device *dev,
 	return __rcrb_to_component(dev, &dport->rcrb, CXL_RCRB_UPSTREAM);
 }
 EXPORT_SYMBOL_NS_GPL(cxl_rcd_component_reg_phys, CXL);
+
+/**
+ * cxl_find_regblock_instance() - Locate a register block by type / index
+ * @pdev: The CXL PCI device to enumerate.
+ * @type: Register Block Indicator id
+ * @map: Enumeration output, clobbered on error
+ * @index: Index into which particular instance of a regblock wanted in the
+ *	   order found in register locator DVSEC.
+ *
+ * Return: 0 if register block enumerated, negative error code otherwise
+ *
+ * A CXL DVSEC may point to one or more register blocks, search for them
+ * by @type and @index.
+ */
+int cxl_find_dvsec_regblock_instance(struct pci_dev *pdev,
+				     enum cxl_regloc_type type,
+				     struct mmio_register_map *map, int index)
+{
+	if (type >= CXL_REGLOC_RBI_TYPES || type == CXL_REGLOC_RBI_EMPTY)
+		return -EINVAL;
+
+	return mmio_find_regblock_instance(pdev, DEV_TYPE_CXL, type, map, index);
+}
+EXPORT_SYMBOL_NS_GPL(cxl_find_dvsec_regblock_instance, CXL);
+
+/**
+ * cxl_find_dvsec_regblock() - Locate CXL DVSEC register blocks by type
+ * @pdev: The PCI device to enumerate
+ * @type: Register Block ID
+ * @map: Enumeration output, clobbered on error
+ *
+ * Return: 0 if register block enumerated, negative error code otherwise
+ *
+ * One or more register blocks may exist, search for them by @type.
+ */
+int cxl_find_dvsec_regblock(struct pci_dev *pdev, enum cxl_regloc_type type,
+			    struct mmio_register_map *map)
+{
+	return cxl_find_dvsec_regblock_instance(pdev, type, map, 0);
+}
+EXPORT_SYMBOL_NS_GPL(cxl_find_dvsec_regblock, CXL);

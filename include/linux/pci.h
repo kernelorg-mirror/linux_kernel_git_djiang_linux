@@ -2719,4 +2719,33 @@ void pci_uevent_ers(struct pci_dev *pdev, enum  pci_ers_result err_type);
 	WARN_ONCE(condition, "%s %s: " fmt, \
 		  dev_driver_string(&(pdev)->dev), pci_name(pdev), ##arg)
 
+/* PCI Register Block Indeitifier (RBI) */
+enum pci_regloc_type {
+	PCI_REGLOC_RBI_EMPTY = 0,
+	PCI_REGLOC_RBI_MCAP,
+	PCI_REGLOC_RBI_MDVS = 0xff,
+	PCI_REGLOC_RBI_TYPES
+};
+
+enum mrb_dev_type {
+	DEV_TYPE_PCI,
+	DEV_TYPE_CXL
+};
+
+struct mmio_register_map {
+	enum mrb_dev_type dev_type;
+	struct device *host;
+	void __iomem *base;
+	resource_size_t resource;
+	resource_size_t max_size;
+	u8 reg_type;
+};
+
+int mmio_find_regblock_instance(struct pci_dev *pdev,
+				enum mrb_dev_type dev_type, int type,
+				struct mmio_register_map *map,
+				int index);
+int pci_mmio_find_regblock(struct pci_dev *pdev, enum pci_regloc_type type,
+			   struct mmio_register_map *map);
+
 #endif /* LINUX_PCI_H */

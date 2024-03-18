@@ -11,6 +11,7 @@
 #include <linux/log2.h>
 #include <linux/node.h>
 #include <linux/io.h>
+#include <linux/pci.h>
 
 /**
  * DOC: cxl objects
@@ -300,6 +301,12 @@ int cxl_setup_regs(struct cxl_register_map *map);
 struct cxl_dport;
 resource_size_t cxl_rcd_component_reg_phys(struct device *dev,
 					   struct cxl_dport *dport);
+
+int cxl_find_dvsec_regblock_instance(struct pci_dev *pdev,
+				     enum cxl_regloc_type type,
+				     struct mmio_register_map *map, int index);
+int cxl_find_dvsec_regblock(struct pci_dev *pdev, enum cxl_regloc_type type,
+			    struct mmio_register_map *map);
 
 #define CXL_RESOURCE_NONE ((resource_size_t) -1)
 #define CXL_TARGET_STRLEN 20

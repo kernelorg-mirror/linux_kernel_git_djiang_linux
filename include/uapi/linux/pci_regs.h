@@ -742,7 +742,8 @@
 #define PCI_EXT_CAP_ID_PL_16GT	0x26	/* Physical Layer 16.0 GT/s */
 #define PCI_EXT_CAP_ID_PL_32GT  0x2A    /* Physical Layer 32.0 GT/s */
 #define PCI_EXT_CAP_ID_DOE	0x2E	/* Data Object Exchange */
-#define PCI_EXT_CAP_ID_MAX	PCI_EXT_CAP_ID_DOE
+#define PCI_EXT_CAP_ID_MRBL	0x36	/* MMIO Register Block */
+#define PCI_EXT_CAP_ID_MAX	PCI_EXT_CAP_ID_MRBL
 
 #define PCI_EXT_CAP_DSN_SIZEOF	12
 #define PCI_EXT_CAP_MCAST_ENDPOINT_SIZEOF 40
@@ -1110,6 +1111,14 @@
 #define  PCI_DVSEC_HEADER1_LEN(x)	(((x) >> 20) & 0xfff)
 #define PCI_DVSEC_HEADER2		0x8 /* Designated Vendor-Specific Header2 */
 #define  PCI_DVSEC_HEADER2_ID(x)		((x) & 0xffff)
+
+/* MMIO Register Block Locator (MRBL, PCI_EXT_CAP_ID_MRBL) */
+#define PCI_MRBL_CAP					0x4
+#define  PCI_MRBL_LEN(x)				((x) & 0xfff)
+#define  PCI_MRBL_REG_LOCATOR_BLOCK1_OFFSET		0x8
+#define  PCI_MRBL_REG_LOCATOR_BIR_MASK			GENMASK(2, 0)
+#define  PCI_MRBL_REG_LOCATOR_BLOCK_ID_MASK		GENMASK(15, 8)
+#define  PCI_MRBL_REG_LOCATOR_BLOCK_OFF_LOW_MASK	GENMASK(31, 16)
 
 /* Data Link Feature */
 #define PCI_DLF_CAP		0x04	/* Capabilities Register */
