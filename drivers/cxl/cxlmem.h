@@ -428,7 +428,7 @@ struct cxl_dpa_perf {
 struct cxl_dev_state {
 	struct device *dev;
 	struct cxl_memdev *cxlmd;
-	struct cxl_register_map reg_map;
+	struct mmio_register_map reg_map;
 	struct cxl_regs regs;
 	int cxl_dvsec;
 	bool rcd;

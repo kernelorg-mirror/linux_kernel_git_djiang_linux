@@ -748,10 +748,10 @@ static struct cxl_port *cxl_port_alloc(struct device *uport_dev,
 	return port;
 }
 
-static int cxl_setup_comp_regs(struct device *host, struct cxl_register_map *map,
+static int cxl_setup_comp_regs(struct device *host, struct mmio_register_map *map,
 			       resource_size_t component_reg_phys)
 {
-	*map = (struct cxl_register_map) {
+	*map = (struct mmio_register_map) {
 		.host = host,
 		.reg_type = CXL_REGLOC_RBI_EMPTY,
 		.resource = component_reg_phys,
@@ -763,7 +763,7 @@ static int cxl_setup_comp_regs(struct device *host, struct cxl_register_map *map
 	map->reg_type = CXL_REGLOC_RBI_COMPONENT;
 	map->max_size = CXL_COMPONENT_REG_BLOCK_SIZE;
 
-	return cxl_setup_regs(map);
+	return cxl_setup_dvsec_regs(map);
 }
 
 static int cxl_port_setup_regs(struct cxl_port *port,
@@ -1519,7 +1519,7 @@ static void cxl_detach_ep(void *data)
 
 static resource_size_t find_component_registers(struct device *dev)
 {
-	struct cxl_register_map map;
+	struct mmio_register_map map;
 	struct pci_dev *pdev;
 
 	/*
@@ -1531,7 +1531,7 @@ static resource_size_t find_component_registers(struct device *dev)
 
 	pdev = to_pci_dev(dev);
 
-	cxl_find_regblock(pdev, CXL_REGLOC_RBI_COMPONENT, &map);
+	cxl_find_dvsec_regblock(pdev, CXL_REGLOC_RBI_COMPONENT, &map);
 	return map.resource;
 }
 

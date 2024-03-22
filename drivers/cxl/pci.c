@@ -471,13 +471,13 @@ static bool is_cxl_restricted(struct pci_dev *pdev)
 }
 
 static int cxl_rcrb_get_comp_regs(struct pci_dev *pdev,
-				  struct cxl_register_map *map)
+				  struct mmio_register_map *map)
 {
 	struct cxl_port *port;
 	struct cxl_dport *dport;
 	resource_size_t component_reg_phys;
 
-	*map = (struct cxl_register_map) {
+	*map = (struct mmio_register_map) {
 		.host = &pdev->dev,
 		.resource = CXL_RESOURCE_NONE,
 	};
@@ -501,11 +501,11 @@ static int cxl_rcrb_get_comp_regs(struct pci_dev *pdev,
 }
 
 static int cxl_pci_setup_regs(struct pci_dev *pdev, enum cxl_regloc_type type,
-			      struct cxl_register_map *map)
+			      struct mmio_register_map *map)
 {
 	int rc;
 
-	rc = cxl_find_regblock(pdev, type, map);
+	rc = cxl_find_dvsec_regblock(pdev, type, map);
 
 	/*
 	 * If the Register Locator DVSEC does not exist, check if it
@@ -518,7 +518,7 @@ static int cxl_pci_setup_regs(struct pci_dev *pdev, enum cxl_regloc_type type,
 	if (rc)
 		return rc;
 
-	return cxl_setup_regs(map);
+	return cxl_setup_dvsec_regs(map);
 }
 
 static int cxl_pci_ras_unmask(struct pci_dev *pdev)
@@ -791,7 +791,7 @@ static int cxl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct pci_host_bridge *host_bridge = pci_find_host_bridge(pdev->bus);
 	struct cxl_memdev_state *mds;
 	struct cxl_dev_state *cxlds;
-	struct cxl_register_map map;
+	struct mmio_register_map map;
 	struct cxl_memdev *cxlmd;
 	int i, rc, pmu_count;
 	bool irq_avail;
@@ -838,7 +838,7 @@ static int cxl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 				&cxlds->reg_map);
 	if (rc)
 		dev_warn(&pdev->dev, "No component registers (%d)\n", rc);
-	else if (!cxlds->reg_map.component_map.ras.valid)
+	else if (!cxlds->reg_map.cxl_component_map.ras.valid)
 		dev_dbg(&pdev->dev, "RAS registers not found\n");
 
 	rc = cxl_map_component_regs(&cxlds->reg_map, &cxlds->regs.component,
@@ -894,7 +894,8 @@ static int cxl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	for (i = 0; i < pmu_count; i++) {
 		struct cxl_pmu_regs pmu_regs;
 
-		rc = cxl_find_regblock_instance(pdev, CXL_REGLOC_RBI_PMU, &map, i);
+		rc = cxl_find_dvsec_regblock_instance(pdev, CXL_REGLOC_RBI_PMU,
+						      &map, i);
 		if (rc) {
 			dev_dbg(&pdev->dev, "Could not find PMU regblock\n");
 			break;

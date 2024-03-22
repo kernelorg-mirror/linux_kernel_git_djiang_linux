@@ -37,7 +37,7 @@ static int match_add_dports(struct pci_dev *pdev, void *data)
 	struct cxl_walk_context *ctx = data;
 	struct cxl_port *port = ctx->port;
 	int type = pci_pcie_type(pdev);
-	struct cxl_register_map map;
+	struct mmio_register_map map;
 	struct cxl_dport *dport;
 	u32 lnkcap, port_num;
 	int rc;
@@ -52,7 +52,7 @@ static int match_add_dports(struct pci_dev *pdev, void *data)
 				  &lnkcap))
 		return 0;
 
-	rc = cxl_find_regblock(pdev, CXL_REGLOC_RBI_COMPONENT, &map);
+	rc = cxl_find_dvsec_regblock(pdev, CXL_REGLOC_RBI_COMPONENT, &map);
 	if (rc)
 		dev_dbg(&port->dev, "failed to find component registers\n");
 
@@ -789,10 +789,10 @@ static void cxl_dport_map_rch_aer(struct cxl_dport *dport)
 
 static void cxl_dport_map_regs(struct cxl_dport *dport)
 {
-	struct cxl_register_map *map = &dport->reg_map;
+	struct mmio_register_map *map = &dport->reg_map;
 	struct device *dev = dport->dport_dev;
 
-	if (!map->component_map.ras.valid)
+	if (!map->cxl_component_map.ras.valid)
 		dev_dbg(dev, "RAS registers not found\n");
 	else if (cxl_map_component_regs(map, &dport->regs.component,
 					BIT(CXL_CM_CAP_CAP_ID_RAS)))

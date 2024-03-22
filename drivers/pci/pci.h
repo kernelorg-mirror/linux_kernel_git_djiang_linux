@@ -880,4 +880,20 @@ struct pci_devres *find_pci_dr(struct pci_dev *pdev);
 
 #define MMIO_RESOURCE_NONE	((resource_size_t)-1)
 
+/* PCI base spec r6.2 6.35.1.1 */
+#define PCI_MCAP_ARRAY1_OFFSET		0x0
+#define PCI_MCAP_ARRAY2_OFFSET		0x4
+#define  PCI_MCAP_ARRAY1_CAP_ID		0
+#define  PCI_MCAP_ARRAY1_ID_MASK	GENMASK(15, 0)
+#define  PCI_MCAP_ARRAY1_VERSION_MASK	GENMASK(23, 16)
+#define  PCI_MCAP_ARRAY1_TYPE_MASK	GENMASK(27, 24)
+#define  PCI_MCAP_ARRAY2_COUNT_MASK	GENMASK(15, 0)
+
+/* PCI base spec r6.2 6.35.1.2 */
+#define PCI_MCAP_HDR_CAP_ID_MASK	GENMASK(15, 0)
+#define PCI_MCAP_HDR_CAP_ID_MMB		0x1
+#define PCI_MCAP_HDR_CAP_ID_MMPT	0x2
+#define PCI_MCAP_HDR_VENDOR_ID_CXL	0x0
+#define PCI_MCAP_HDR_VENDOR_ID_PCI	0x1
+
 #endif /* DRIVERS_PCI_H */

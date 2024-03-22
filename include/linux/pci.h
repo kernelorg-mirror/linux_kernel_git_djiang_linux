@@ -2732,6 +2732,33 @@ enum mrb_dev_type {
 	DEV_TYPE_CXL
 };
 
+struct pci_reg_map {
+	bool valid;
+	int id;
+	unsigned long offset;
+	unsigned long size;
+};
+
+struct pci_mmio_reg_map {
+	struct pci_reg_map mbox;
+	struct pci_reg_map mmpt;
+};
+
+struct cxl_component_reg_map {
+	struct pci_reg_map hdm_decoder;
+	struct pci_reg_map ras;
+};
+
+struct cxl_device_reg_map {
+	struct pci_reg_map status;
+	struct pci_reg_map mbox;
+	struct pci_reg_map memdev;
+};
+
+struct cxl_pmu_reg_map {
+	struct pci_reg_map pmu;
+};
+
 struct mmio_register_map {
 	enum mrb_dev_type dev_type;
 	struct device *host;
@@ -2739,6 +2766,12 @@ struct mmio_register_map {
 	resource_size_t resource;
 	resource_size_t max_size;
 	u8 reg_type;
+	union {
+		struct pci_mmio_reg_map pci_mmio_map;
+		struct cxl_component_reg_map cxl_component_map;
+		struct cxl_device_reg_map cxl_device_map;
+		struct cxl_pmu_reg_map cxl_pmu_map;
+	};
 };
 
 int mmio_find_regblock_instance(struct pci_dev *pdev,
@@ -2747,5 +2780,8 @@ int mmio_find_regblock_instance(struct pci_dev *pdev,
 				int index);
 int pci_mmio_find_regblock(struct pci_dev *pdev, enum pci_regloc_type type,
 			   struct mmio_register_map *map);
+int mmio_setup_regs(struct mmio_register_map *map,
+		    int (*probe_regs)(struct mmio_register_map *map));
+int pci_mmio_setup_regs(struct mmio_register_map *map);
 
 #endif /* LINUX_PCI_H */

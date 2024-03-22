@@ -36,8 +36,8 @@
  *
  * Probe for component register information and return it in map object.
  */
-void cxl_probe_component_regs(struct device *dev, void __iomem *base,
-			      struct cxl_component_reg_map *map)
+static void cxl_probe_component_regs(struct device *dev, void __iomem *base,
+				     struct cxl_component_reg_map *map)
 {
 	int cap, cap_count;
 	u32 cap_array;
@@ -63,7 +63,7 @@ void cxl_probe_component_regs(struct device *dev, void __iomem *base,
 
 	for (cap = 1; cap <= cap_count; cap++) {
 		void __iomem *register_block;
-		struct cxl_reg_map *rmap;
+		struct pci_reg_map *rmap;
 		u16 cap_id, offset;
 		u32 length, hdr;
 
@@ -107,7 +107,6 @@ void cxl_probe_component_regs(struct device *dev, void __iomem *base,
 		rmap->size = length;
 	}
 }
-EXPORT_SYMBOL_NS_GPL(cxl_probe_component_regs, CXL);
 
 /**
  * cxl_probe_device_regs() - Detect CXL Device register blocks
@@ -117,8 +116,8 @@ EXPORT_SYMBOL_NS_GPL(cxl_probe_component_regs, CXL);
  *
  * Probe for device register information and return it in map object.
  */
-void cxl_probe_device_regs(struct device *dev, void __iomem *base,
-			   struct cxl_device_reg_map *map)
+static void cxl_probe_device_regs(struct device *dev, void __iomem *base,
+				  struct cxl_device_reg_map *map)
 {
 	int cap, cap_count;
 	u64 cap_array;
@@ -133,7 +132,7 @@ void cxl_probe_device_regs(struct device *dev, void __iomem *base,
 	cap_count = FIELD_GET(CXLDEV_CAP_ARRAY_COUNT_MASK, cap_array);
 
 	for (cap = 1; cap <= cap_count; cap++) {
-		struct cxl_reg_map *rmap;
+		struct pci_reg_map *rmap;
 		u32 offset, length;
 		u16 cap_id;
 
@@ -175,7 +174,7 @@ void cxl_probe_device_regs(struct device *dev, void __iomem *base,
 		rmap->size = length;
 	}
 }
-EXPORT_SYMBOL_NS_GPL(cxl_probe_device_regs, CXL);
+
 
 void __iomem *devm_cxl_iomap_block(struct device *dev, resource_size_t addr,
 				   resource_size_t length)
@@ -201,17 +200,17 @@ void __iomem *devm_cxl_iomap_block(struct device *dev, resource_size_t addr,
 	return ret_val;
 }
 
-int cxl_map_component_regs(const struct cxl_register_map *map,
+int cxl_map_component_regs(const struct mmio_register_map *map,
 			   struct cxl_component_regs *regs,
 			   unsigned long map_mask)
 {
 	struct device *host = map->host;
 	struct mapinfo {
-		const struct cxl_reg_map *rmap;
+		const struct pci_reg_map *rmap;
 		void __iomem **addr;
 	} mapinfo[] = {
-		{ &map->component_map.hdm_decoder, &regs->hdm_decoder },
-		{ &map->component_map.ras, &regs->ras },
+		{ &map->cxl_component_map.hdm_decoder, &regs->hdm_decoder },
+		{ &map->cxl_component_map.ras, &regs->ras },
 	};
 	int i;
 
@@ -235,18 +234,18 @@ int cxl_map_component_regs(const struct cxl_register_map *map,
 }
 EXPORT_SYMBOL_NS_GPL(cxl_map_component_regs, CXL);
 
-int cxl_map_device_regs(const struct cxl_register_map *map,
+int cxl_map_device_regs(const struct mmio_register_map *map,
 			struct cxl_device_regs *regs)
 {
 	struct device *host = map->host;
 	resource_size_t phys_addr = map->resource;
 	struct mapinfo {
-		const struct cxl_reg_map *rmap;
+		const struct pci_reg_map *rmap;
 		void __iomem **addr;
 	} mapinfo[] = {
-		{ &map->device_map.status, &regs->status, },
-		{ &map->device_map.mbox, &regs->mbox, },
-		{ &map->device_map.memdev, &regs->memdev, },
+		{ &map->cxl_device_map.status, &regs->status, },
+		{ &map->cxl_device_map.mbox, &regs->mbox, },
+		{ &map->cxl_device_map.memdev, &regs->memdev, },
 	};
 	int i;
 
@@ -269,102 +268,6 @@ int cxl_map_device_regs(const struct cxl_register_map *map,
 }
 EXPORT_SYMBOL_NS_GPL(cxl_map_device_regs, CXL);
 
-static bool cxl_decode_regblock(struct pci_dev *pdev, u32 reg_lo, u32 reg_hi,
-				struct cxl_register_map *map)
-{
-	u8 reg_type = FIELD_GET(CXL_DVSEC_REG_LOCATOR_BLOCK_ID_MASK, reg_lo);
-	int bar = FIELD_GET(CXL_DVSEC_REG_LOCATOR_BIR_MASK, reg_lo);
-	u64 offset = ((u64)reg_hi << 32) |
-		     (reg_lo & CXL_DVSEC_REG_LOCATOR_BLOCK_OFF_LOW_MASK);
-
-	if (offset > pci_resource_len(pdev, bar)) {
-		dev_warn(&pdev->dev,
-			 "BAR%d: %pr: too small (offset: %pa, type: %d)\n", bar,
-			 &pdev->resource[bar], &offset, reg_type);
-		return false;
-	}
-
-	map->reg_type = reg_type;
-	map->resource = pci_resource_start(pdev, bar) + offset;
-	map->max_size = pci_resource_len(pdev, bar) - offset;
-	return true;
-}
-
-/**
- * cxl_find_regblock_instance() - Locate a register block by type / index
- * @pdev: The CXL PCI device to enumerate.
- * @type: Register Block Indicator id
- * @map: Enumeration output, clobbered on error
- * @index: Index into which particular instance of a regblock wanted in the
- *	   order found in register locator DVSEC.
- *
- * Return: 0 if register block enumerated, negative error code otherwise
- *
- * A CXL DVSEC may point to one or more register blocks, search for them
- * by @type and @index.
- */
-int cxl_find_regblock_instance(struct pci_dev *pdev, enum cxl_regloc_type type,
-			       struct cxl_register_map *map, int index)
-{
-	u32 regloc_size, regblocks;
-	int instance = 0;
-	int regloc, i;
-
-	*map = (struct cxl_register_map) {
-		.host = &pdev->dev,
-		.resource = CXL_RESOURCE_NONE,
-	};
-
-	regloc = pci_find_dvsec_capability(pdev, PCI_VENDOR_ID_CXL,
-					   CXL_DVSEC_REG_LOCATOR);
-	if (!regloc)
-		return -ENXIO;
-
-	pci_read_config_dword(pdev, regloc + PCI_DVSEC_HEADER1, &regloc_size);
-	regloc_size = FIELD_GET(PCI_DVSEC_HEADER1_LENGTH_MASK, regloc_size);
-
-	regloc += CXL_DVSEC_REG_LOCATOR_BLOCK1_OFFSET;
-	regblocks = (regloc_size - CXL_DVSEC_REG_LOCATOR_BLOCK1_OFFSET) / 8;
-
-	for (i = 0; i < regblocks; i++, regloc += 8) {
-		u32 reg_lo, reg_hi;
-
-		pci_read_config_dword(pdev, regloc, &reg_lo);
-		pci_read_config_dword(pdev, regloc + 4, &reg_hi);
-
-		if (!cxl_decode_regblock(pdev, reg_lo, reg_hi, map))
-			continue;
-
-		if (map->reg_type == type) {
-			if (index == instance)
-				return 0;
-			instance++;
-		}
-	}
-
-	map->resource = CXL_RESOURCE_NONE;
-	return -ENODEV;
-}
-EXPORT_SYMBOL_NS_GPL(cxl_find_regblock_instance, CXL);
-
-/**
- * cxl_find_regblock() - Locate register blocks by type
- * @pdev: The CXL PCI device to enumerate.
- * @type: Register Block Indicator id
- * @map: Enumeration output, clobbered on error
- *
- * Return: 0 if register block enumerated, negative error code otherwise
- *
- * A CXL DVSEC may point to one or more register blocks, search for them
- * by @type.
- */
-int cxl_find_regblock(struct pci_dev *pdev, enum cxl_regloc_type type,
-		      struct cxl_register_map *map)
-{
-	return cxl_find_regblock_instance(pdev, type, map, 0);
-}
-EXPORT_SYMBOL_NS_GPL(cxl_find_regblock, CXL);
-
 /**
  * cxl_count_regblock() - Count instances of a given regblock type.
  * @pdev: The CXL PCI device to enumerate.
@@ -376,11 +279,11 @@ EXPORT_SYMBOL_NS_GPL(cxl_find_regblock, CXL);
  */
 int cxl_count_regblock(struct pci_dev *pdev, enum cxl_regloc_type type)
 {
-	struct cxl_register_map map;
+	struct mmio_register_map map;
 	int rc, count = 0;
 
 	while (1) {
-		rc = cxl_find_regblock_instance(pdev, type, &map, count);
+		rc = cxl_find_dvsec_regblock_instance(pdev, type, &map, count);
 		if (rc)
 			return count;
 		count++;
@@ -388,7 +291,7 @@ int cxl_count_regblock(struct pci_dev *pdev, enum cxl_regloc_type type)
 }
 EXPORT_SYMBOL_NS_GPL(cxl_count_regblock, CXL);
 
-int cxl_map_pmu_regs(struct cxl_register_map *map, struct cxl_pmu_regs *regs)
+int cxl_map_pmu_regs(struct mmio_register_map *map, struct cxl_pmu_regs *regs)
 {
 	struct device *dev = map->host;
 	resource_size_t phys_addr;
@@ -402,27 +305,7 @@ int cxl_map_pmu_regs(struct cxl_register_map *map, struct cxl_pmu_regs *regs)
 }
 EXPORT_SYMBOL_NS_GPL(cxl_map_pmu_regs, CXL);
 
-static int cxl_map_regblock(struct cxl_register_map *map)
-{
-	struct device *host = map->host;
-
-	map->base = ioremap(map->resource, map->max_size);
-	if (!map->base) {
-		dev_err(host, "failed to map registers\n");
-		return -ENOMEM;
-	}
-
-	dev_dbg(host, "Mapped CXL Memory Device resource %pa\n", &map->resource);
-	return 0;
-}
-
-static void cxl_unmap_regblock(struct cxl_register_map *map)
-{
-	iounmap(map->base);
-	map->base = NULL;
-}
-
-static int cxl_probe_regs(struct cxl_register_map *map)
+static int cxl_probe_dvsec_regs(struct mmio_register_map *map)
 {
 	struct cxl_component_reg_map *comp_map;
 	struct cxl_device_reg_map *dev_map;
@@ -431,12 +314,12 @@ static int cxl_probe_regs(struct cxl_register_map *map)
 
 	switch (map->reg_type) {
 	case CXL_REGLOC_RBI_COMPONENT:
-		comp_map = &map->component_map;
+		comp_map = &map->cxl_component_map;
 		cxl_probe_component_regs(host, base, comp_map);
 		dev_dbg(host, "Set up component registers\n");
 		break;
 	case CXL_REGLOC_RBI_MEMDEV:
-		dev_map = &map->device_map;
+		dev_map = &map->cxl_device_map;
 		cxl_probe_device_regs(host, base, dev_map);
 		if (!dev_map->status.valid || !dev_map->mbox.valid ||
 		    !dev_map->memdev.valid) {
@@ -456,20 +339,11 @@ static int cxl_probe_regs(struct cxl_register_map *map)
 	return 0;
 }
 
-int cxl_setup_regs(struct cxl_register_map *map)
+int cxl_setup_dvsec_regs(struct mmio_register_map *map)
 {
-	int rc;
-
-	rc = cxl_map_regblock(map);
-	if (rc)
-		return rc;
-
-	rc = cxl_probe_regs(map);
-	cxl_unmap_regblock(map);
-
-	return rc;
+	return mmio_setup_regs(map, cxl_probe_dvsec_regs);
 }
-EXPORT_SYMBOL_NS_GPL(cxl_setup_regs, CXL);
+EXPORT_SYMBOL_NS_GPL(cxl_setup_dvsec_regs, CXL);
 
 u16 cxl_rcrb_to_aer(struct device *dev, resource_size_t rcrb)
 {

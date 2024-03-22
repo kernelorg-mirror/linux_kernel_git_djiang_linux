@@ -133,7 +133,7 @@ static bool should_emulate_decoders(struct cxl_endpoint_dvsec_info *info)
 struct cxl_hdm *devm_cxl_setup_hdm(struct cxl_port *port,
 				   struct cxl_endpoint_dvsec_info *info)
 {
-	struct cxl_register_map *reg_map = &port->reg_map;
+	struct mmio_register_map *reg_map = &port->reg_map;
 	struct device *dev = &port->dev;
 	struct cxl_hdm *cxlhdm;
 	int rc;
@@ -155,7 +155,7 @@ struct cxl_hdm *devm_cxl_setup_hdm(struct cxl_port *port,
 		return cxlhdm;
 	}
 
-	if (!reg_map->component_map.hdm_decoder.valid) {
+	if (!reg_map->cxl_component_map.hdm_decoder.valid) {
 		dev_dbg(&port->dev, "HDM decoder registers not implemented\n");
 		/* unique error code to indicate no HDM decoder capability */
 		return ERR_PTR(-ENODEV);
