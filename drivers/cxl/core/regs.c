@@ -175,31 +175,6 @@ static void cxl_probe_device_regs(struct device *dev, void __iomem *base,
 	}
 }
 
-
-void __iomem *devm_cxl_iomap_block(struct device *dev, resource_size_t addr,
-				   resource_size_t length)
-{
-	void __iomem *ret_val;
-	struct resource *res;
-
-	if (WARN_ON_ONCE(addr == CXL_RESOURCE_NONE))
-		return NULL;
-
-	res = devm_request_mem_region(dev, addr, length, dev_name(dev));
-	if (!res) {
-		resource_size_t end = addr + length - 1;
-
-		dev_err(dev, "Failed to request region %pa-%pa\n", &addr, &end);
-		return NULL;
-	}
-
-	ret_val = devm_ioremap(dev, addr, length);
-	if (!ret_val)
-		dev_err(dev, "Failed to map region %pr\n", res);
-
-	return ret_val;
-}
-
 int cxl_map_component_regs(const struct mmio_register_map *map,
 			   struct cxl_component_regs *regs,
 			   unsigned long map_mask)
@@ -225,7 +200,7 @@ int cxl_map_component_regs(const struct mmio_register_map *map,
 			continue;
 		addr = map->resource + mi->rmap->offset;
 		length = mi->rmap->size;
-		*(mi->addr) = devm_cxl_iomap_block(host, addr, length);
+		*mi->addr = devm_pci_mmio_iomap_block(host, addr, length);
 		if (!*(mi->addr))
 			return -ENOMEM;
 	}
@@ -259,7 +234,7 @@ int cxl_map_device_regs(const struct mmio_register_map *map,
 
 		addr = phys_addr + mi->rmap->offset;
 		length = mi->rmap->size;
-		*(mi->addr) = devm_cxl_iomap_block(host, addr, length);
+		*mi->addr = devm_pci_mmio_iomap_block(host, addr, length);
 		if (!*(mi->addr))
 			return -ENOMEM;
 	}
@@ -297,7 +272,7 @@ int cxl_map_pmu_regs(struct mmio_register_map *map, struct cxl_pmu_regs *regs)
 	resource_size_t phys_addr;
 
 	phys_addr = map->resource;
-	regs->pmu = devm_cxl_iomap_block(dev, phys_addr, CXL_PMU_REGMAP_SIZE);
+	regs->pmu = devm_pci_mmio_iomap_block(dev, phys_addr, CXL_PMU_REGMAP_SIZE);
 	if (!regs->pmu)
 		return -ENOMEM;
 

@@ -2774,6 +2774,16 @@ struct mmio_register_map {
 	};
 };
 
+struct pci_mmio_regs {
+	/*
+	 * Common set of PCI MMIO register block base pointers
+	 * @mbox: PCIe base spec r6.2 6.35.1.3 MMIO Mailbox
+	 * @mmpt: PCIe base spec r6.2 6.35.1.4 Management Message Passthrough
+	 */
+	void __iomem *mbox;
+	void __iomem *mmpt;
+};
+
 int mmio_find_regblock_instance(struct pci_dev *pdev,
 				enum mrb_dev_type dev_type, int type,
 				struct mmio_register_map *map,
@@ -2783,5 +2793,10 @@ int pci_mmio_find_regblock(struct pci_dev *pdev, enum pci_regloc_type type,
 int mmio_setup_regs(struct mmio_register_map *map,
 		    int (*probe_regs)(struct mmio_register_map *map));
 int pci_mmio_setup_regs(struct mmio_register_map *map);
+
+void __iomem *devm_pci_mmio_iomap_block(struct device *dev, resource_size_t addr,
+					resource_size_t length);
+int pci_map_mmio_regs(const struct mmio_register_map *map,
+		      struct pci_mmio_regs *regs);
 
 #endif /* LINUX_PCI_H */

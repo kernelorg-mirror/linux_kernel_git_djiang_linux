@@ -780,7 +780,7 @@ static void cxl_dport_map_rch_aer(struct cxl_dport *dport)
 	if (dport->rch && ri->aer_cap) {
 		host = dport->reg_map.host;
 		aer_phys = ri->aer_cap + ri->base;
-		dport_aer = devm_cxl_iomap_block(host, aer_phys,
+		dport_aer = devm_pci_mmio_iomap_block(host, aer_phys,
 				sizeof(struct aer_capability_regs));
 	}
 

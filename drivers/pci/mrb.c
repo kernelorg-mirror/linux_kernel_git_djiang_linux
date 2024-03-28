@@ -236,3 +236,75 @@ int pci_mmio_find_regblock(struct pci_dev *pdev, enum pci_regloc_type type,
 	return mmio_find_regblock_instance(pdev, DEV_TYPE_PCI, type, map, 0);
 }
 EXPORT_SYMBOL_GPL(pci_mmio_find_regblock);
+
+/**
+ * devm_pci_mmio_iomap_block() - Helper to request region and map the MMIO block
+ * @dev: Device to map against
+ * @addr: Start location of the mapping
+ * @length: Length of the mapping
+ *
+ * Return: 0 if MMIO address mapped, negative error code otherwise
+ */
+void __iomem *devm_pci_mmio_iomap_block(struct device *dev, resource_size_t addr,
+					resource_size_t length)
+{
+	void __iomem *ret_val;
+	struct resource *res;
+
+	if (WARN_ON_ONCE(addr == MMIO_RESOURCE_NONE))
+		return NULL;
+
+	res = devm_request_mem_region(dev, addr, length, dev_name(dev));
+	if (!res) {
+		resource_size_t end = addr + length - 1;
+
+		dev_err(dev, "Failed to request region %pa-%pa\n", &addr, &end);
+		return NULL;
+	}
+
+	ret_val = devm_ioremap(dev, addr, length);
+	if (!ret_val)
+		dev_err(dev, "Failed to map region %pr\n", res);
+
+	return ret_val;
+}
+EXPORT_SYMBOL_GPL(devm_pci_mmio_iomap_block);
+
+/**
+ * pci_map_mmio_regs() - Mapping function for PCI MMIO mbox and mmpt registers
+ * @map: Register map info
+ * @regs: struct of pointers to be setup with mapped virtual address
+ *
+ * Return: 0 if MMIO address mapped, negative error code otherwise
+ */
+int pci_map_mmio_regs(const struct mmio_register_map *map,
+		      struct pci_mmio_regs *regs)
+{
+	struct device *host = map->host;
+	resource_size_t phys_addr = map->resource;
+	struct mapinfo {
+		const struct pci_reg_map *rmap;
+		void __iomem **addr;
+	} mapinfo[] = {
+		{ &map->pci_mmio_map.mbox, &regs->mbox, },
+		{ &map->pci_mmio_map.mmpt, &regs->mmpt, },
+	};
+
+	for (int i = 0; i < ARRAY_SIZE(mapinfo); i++) {
+		struct mapinfo *mi = &mapinfo[i];
+		resource_size_t length;
+		resource_size_t addr;
+
+		if (!mi->rmap->valid)
+			continue;
+
+		addr = phys_addr + mi->rmap->offset;
+		length = mi->rmap->size;
+		*mi->addr = devm_pci_mmio_iomap_block(host, addr, length);
+		if (!*mi->addr)
+			return -ENOMEM;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(pci_map_mmio_regs);
