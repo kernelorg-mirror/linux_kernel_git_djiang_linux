@@ -19,11 +19,11 @@ static unsigned long cxl_pmem_get_security_flags(struct nvdimm *nvdimm,
 	struct cxl_get_security_output {
 		__le32 flags;
 	} out;
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	u32 sec_out;
 	int rc;
 
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_GET_SECURITY_STATE,
 		.size_out = sizeof(out),
 		.payload_out = &out,
@@ -71,7 +71,7 @@ static int cxl_pmem_security_change_key(struct nvdimm *nvdimm,
 	struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlmd->cxlds);
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	struct cxl_set_pass set_pass;
 
 	set_pass = (struct cxl_set_pass) {
@@ -81,7 +81,7 @@ static int cxl_pmem_security_change_key(struct nvdimm *nvdimm,
 	memcpy(set_pass.old_pass, old_data->data, NVDIMM_PASSPHRASE_LEN);
 	memcpy(set_pass.new_pass, new_data->data, NVDIMM_PASSPHRASE_LEN);
 
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_SET_PASSPHRASE,
 		.size_in = sizeof(set_pass),
 		.payload_in = &set_pass,
@@ -98,7 +98,7 @@ static int __cxl_pmem_security_disable(struct nvdimm *nvdimm,
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlmd->cxlds);
 	struct cxl_disable_pass dis_pass;
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 
 	dis_pass = (struct cxl_disable_pass) {
 		.type = ptype == NVDIMM_MASTER ? CXL_PMEM_SEC_PASS_MASTER :
@@ -106,7 +106,7 @@ static int __cxl_pmem_security_disable(struct nvdimm *nvdimm,
 	};
 	memcpy(dis_pass.pass, key_data->data, NVDIMM_PASSPHRASE_LEN);
 
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_DISABLE_PASSPHRASE,
 		.size_in = sizeof(dis_pass),
 		.payload_in = &dis_pass,
@@ -132,7 +132,7 @@ static int cxl_pmem_security_freeze(struct nvdimm *nvdimm)
 	struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlmd->cxlds);
-	struct cxl_mbox_cmd mbox_cmd = {
+	struct mmio_mbox_cmd mbox_cmd = {
 		.opcode = CXL_MBOX_OP_FREEZE_SECURITY,
 	};
 
@@ -146,11 +146,11 @@ static int cxl_pmem_security_unlock(struct nvdimm *nvdimm,
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlmd->cxlds);
 	u8 pass[NVDIMM_PASSPHRASE_LEN];
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	int rc;
 
 	memcpy(pass, key_data->data, NVDIMM_PASSPHRASE_LEN);
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_UNLOCK,
 		.size_in = NVDIMM_PASSPHRASE_LEN,
 		.payload_in = pass,
@@ -170,7 +170,7 @@ static int cxl_pmem_security_passphrase_erase(struct nvdimm *nvdimm,
 	struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlmd->cxlds);
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	struct cxl_pass_erase erase;
 	int rc;
 
@@ -179,7 +179,7 @@ static int cxl_pmem_security_passphrase_erase(struct nvdimm *nvdimm,
 						 CXL_PMEM_SEC_PASS_USER,
 	};
 	memcpy(erase.pass, key->data, NVDIMM_PASSPHRASE_LEN);
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_PASSPHRASE_SECURE_ERASE,
 		.size_in = sizeof(erase),
 		.payload_in = &erase,

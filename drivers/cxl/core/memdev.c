@@ -324,7 +324,7 @@ int cxl_inject_poison(struct cxl_memdev *cxlmd, u64 dpa)
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlmd->cxlds);
 	struct cxl_mbox_inject_poison inject;
 	struct cxl_poison_record record;
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	struct cxl_region *cxlr;
 	int rc;
 
@@ -346,7 +346,7 @@ int cxl_inject_poison(struct cxl_memdev *cxlmd, u64 dpa)
 		goto out;
 
 	inject.address = cpu_to_le64(dpa);
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_INJECT_POISON,
 		.size_in = sizeof(inject),
 		.payload_in = &inject,
@@ -379,7 +379,7 @@ int cxl_clear_poison(struct cxl_memdev *cxlmd, u64 dpa)
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlmd->cxlds);
 	struct cxl_mbox_clear_poison clear;
 	struct cxl_poison_record record;
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	struct cxl_region *cxlr;
 	int rc;
 
@@ -409,7 +409,7 @@ int cxl_clear_poison(struct cxl_memdev *cxlmd, u64 dpa)
 		.address = cpu_to_le64(dpa)
 	};
 
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_CLEAR_POISON,
 		.size_in = sizeof(clear),
 		.payload_in = &clear,
@@ -759,10 +759,10 @@ static int cxl_memdev_release_file(struct inode *inode, struct file *file)
 static int cxl_mem_get_fw_info(struct cxl_memdev_state *mds)
 {
 	struct cxl_mbox_get_fw_info info;
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	int rc;
 
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_GET_FW_INFO,
 		.size_out = sizeof(info),
 		.payload_out = &info,
@@ -793,12 +793,12 @@ static int cxl_mem_get_fw_info(struct cxl_memdev_state *mds)
 static int cxl_mem_activate_fw(struct cxl_memdev_state *mds, int slot)
 {
 	struct cxl_mbox_activate_fw activate;
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 
 	if (slot == 0 || slot > mds->fw.num_slots)
 		return -EINVAL;
 
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_ACTIVATE_FW,
 		.size_in = sizeof(activate),
 		.payload_in = &activate,
@@ -824,7 +824,7 @@ static int cxl_mem_activate_fw(struct cxl_memdev_state *mds, int slot)
 static int cxl_mem_abort_fw_xfer(struct cxl_memdev_state *mds)
 {
 	struct cxl_mbox_transfer_fw *transfer;
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	int rc;
 
 	transfer = kzalloc(struct_size(transfer, data, 0), GFP_KERNEL);
@@ -832,7 +832,7 @@ static int cxl_mem_abort_fw_xfer(struct cxl_memdev_state *mds)
 		return -ENOMEM;
 
 	/* Set a 1s poll interval and a total wait time of 30s */
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_TRANSFER_FW,
 		.size_in = sizeof(*transfer),
 		.payload_in = transfer,
@@ -900,7 +900,7 @@ static enum fw_upload_err cxl_fw_write(struct fw_upload *fwl, const u8 *data,
 	struct cxl_dev_state *cxlds = &mds->cxlds;
 	struct cxl_memdev *cxlmd = cxlds->cxlmd;
 	struct cxl_mbox_transfer_fw *transfer;
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	u32 cur_size, remaining;
 	size_t size_in;
 	int rc;
@@ -957,7 +957,7 @@ static enum fw_upload_err cxl_fw_write(struct fw_upload *fwl, const u8 *data,
 		}
 	}
 
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_TRANSFER_FW,
 		.size_in = size_in,
 		.payload_in = transfer,

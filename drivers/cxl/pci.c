@@ -193,7 +193,7 @@ static void cxl_mbox_sanitize_work(struct work_struct *work)
  * mailbox.
  */
 static int __cxl_pci_mbox_send_cmd(struct cxl_memdev_state *mds,
-				   struct cxl_mbox_cmd *mbox_cmd)
+				   struct mmio_mbox_cmd *mbox_cmd)
 {
 	struct cxl_dev_state *cxlds = &mds->cxlds;
 	void __iomem *payload = cxlds->regs.mbox + CXLDEV_MBOX_PAYLOAD_OFFSET;
@@ -371,7 +371,7 @@ success:
 }
 
 static int cxl_pci_mbox_send(struct cxl_memdev_state *mds,
-			     struct cxl_mbox_cmd *cmd)
+			     struct mmio_mbox_cmd *cmd)
 {
 	int rc;
 
@@ -653,7 +653,7 @@ static int cxl_event_req_irq(struct cxl_dev_state *cxlds, u8 setting)
 static int cxl_event_get_int_policy(struct cxl_memdev_state *mds,
 				    struct cxl_event_interrupt_policy *policy)
 {
-	struct cxl_mbox_cmd mbox_cmd = {
+	struct mmio_mbox_cmd mbox_cmd = {
 		.opcode = CXL_MBOX_OP_GET_EVT_INT_POLICY,
 		.payload_out = policy,
 		.size_out = sizeof(*policy),
@@ -671,7 +671,7 @@ static int cxl_event_get_int_policy(struct cxl_memdev_state *mds,
 static int cxl_event_config_msgnums(struct cxl_memdev_state *mds,
 				    struct cxl_event_interrupt_policy *policy)
 {
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	int rc;
 
 	*policy = (struct cxl_event_interrupt_policy) {
@@ -681,7 +681,7 @@ static int cxl_event_config_msgnums(struct cxl_memdev_state *mds,
 		.fatal_settings = CXL_INT_MSI_MSIX,
 	};
 
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_SET_EVT_INT_POLICY,
 		.payload_in = policy,
 		.size_in = sizeof(*policy),

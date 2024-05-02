@@ -121,7 +121,7 @@ static int cxl_pmem_get_config_data(struct cxl_memdev_state *mds,
 				    unsigned int buf_len)
 {
 	struct cxl_mbox_get_lsa get_lsa;
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	int rc;
 
 	if (sizeof(*cmd) > buf_len)
@@ -133,7 +133,7 @@ static int cxl_pmem_get_config_data(struct cxl_memdev_state *mds,
 		.offset = cpu_to_le32(cmd->in_offset),
 		.length = cpu_to_le32(cmd->in_length),
 	};
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_GET_LSA,
 		.payload_in = &get_lsa,
 		.size_in = sizeof(get_lsa),
@@ -152,7 +152,7 @@ static int cxl_pmem_set_config_data(struct cxl_memdev_state *mds,
 				    unsigned int buf_len)
 {
 	struct cxl_mbox_set_lsa *set_lsa;
-	struct cxl_mbox_cmd mbox_cmd;
+	struct mmio_mbox_cmd mbox_cmd;
 	int rc;
 
 	if (sizeof(*cmd) > buf_len)
@@ -171,7 +171,7 @@ static int cxl_pmem_set_config_data(struct cxl_memdev_state *mds,
 		.offset = cpu_to_le32(cmd->in_offset),
 	};
 	memcpy(set_lsa->data, cmd->in_buf, cmd->in_length);
-	mbox_cmd = (struct cxl_mbox_cmd) {
+	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_SET_LSA,
 		.payload_in = set_lsa,
 		.size_in = struct_size(set_lsa, data, cmd->in_length),
