@@ -1484,11 +1484,11 @@ static int cxl_mbox_cmd_send_prep(struct mmio_mailbox *mbox,
 	return 0;
 }
 
-bool cxl_mbox_background_complete(struct cxl_dev_state *cxlds)
+bool cxl_mbox_background_complete(struct mmio_mailbox *mbox)
 {
 	u64 reg;
 
-	reg = readq(cxlds->regs.mbox + CXLDEV_MBOX_BG_CMD_STATUS_OFFSET);
+	reg = readq(mbox->mbox_ctrl_addr + CXLDEV_MBOX_BG_CMD_STATUS_OFFSET);
 	return FIELD_GET(CXLDEV_MBOX_BG_CMD_COMMAND_PCT_MASK, reg) == 100;
 }
 EXPORT_SYMBOL_NS_GPL(cxl_mbox_background_complete, CXL);
@@ -1541,20 +1541,20 @@ static int cxl_mbox_cmd_send_done(struct mmio_mailbox *mbox,
 
 	timeout = mbox_cmd->poll_interval_ms;
 	for (i = 0; i < mbox_cmd->poll_count; i++) {
-		if (rcuwait_wait_event_timeout(&mds->cxlds.mbox.mbox_wait,
-			       cxl_mbox_background_complete(cxlds),
+		if (rcuwait_wait_event_timeout(&mbox->mbox_wait,
+			       cxl_mbox_background_complete(mbox),
 			       TASK_UNINTERRUPTIBLE,
 			       msecs_to_jiffies(timeout)) > 0)
 			break;
 	}
 
-	if (!cxl_mbox_background_complete(cxlds)) {
+	if (!cxl_mbox_background_complete(mbox)) {
 		dev_err(dev, "timeout waiting for background (%d ms)\n",
 			timeout * mbox_cmd->poll_count);
 		return -ETIMEDOUT;
 	}
 
-	bg_status_reg = readq(cxlds->regs.mbox +
+	bg_status_reg = readq(mbox->mbox_ctrl_addr +
 			      CXLDEV_MBOX_BG_CMD_STATUS_OFFSET);
 	mbox_cmd->return_code = FIELD_GET(CXLDEV_MBOX_BG_CMD_COMMAND_RC_MASK,
 					  bg_status_reg);
@@ -1575,7 +1575,7 @@ static void cxl_mbox_sanitize_work(struct work_struct *work)
 	struct mmio_mailbox *mbox = &cxlds->mbox;
 
 	guard(mutex)(&mbox->mbox_mutex);
-	if (cxl_mbox_background_complete(cxlds)) {
+	if (cxl_mbox_background_complete(mbox)) {
 		mds->security.poll_tmo_secs = 0;
 		if (mds->security.sanitize_node)
 			sysfs_notify_dirent(mds->security.sanitize_node);
@@ -1590,23 +1590,6 @@ static void cxl_mbox_sanitize_work(struct work_struct *work)
 	}
 }
 
-int cxl_request_irq(struct cxl_dev_state *cxlds, int irq,
-		    irq_handler_t thread_fn)
-{
-	struct device *dev = cxlds->dev;
-	struct cxl_dev_id *dev_id;
-
-	dev_id = devm_kzalloc(dev, sizeof(*dev_id), GFP_KERNEL);
-	if (!dev_id)
-		return -ENOMEM;
-	dev_id->cxlds = cxlds;
-
-	return devm_request_threaded_irq(dev, irq, NULL, thread_fn,
-					 IRQF_SHARED | IRQF_ONESHOT, NULL,
-					 dev_id);
-}
-EXPORT_SYMBOL_NS_GPL(cxl_request_irq, CXL);
-
 static const struct mmio_mbox_ops cxl_mbox_ops = {
 	.mbox_ready = cxl_mbox_ready,
 	.mbox_send = cxl_mailbox_send,
@@ -1614,14 +1597,14 @@ static const struct mmio_mbox_ops cxl_mbox_ops = {
 	.cmd_done = cxl_mbox_cmd_send_done,
 };
 
-int cxl_setup_mailbox(struct cxl_dev_state *cxlds, irq_handler_t thread_fn)
+int cxl_setup_mailbox(struct mmio_mailbox *mbox, irq_handler_t thread_fn)
 {
+	struct cxl_dev_state *cxlds = container_of(mbox, typeof(*cxlds), mbox);
 	const int cap = readl(cxlds->regs.mbox + CXLDEV_MBOX_CAPS_OFFSET);
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlds);
 	struct device *dev = cxlds->dev;
 	struct pci_dev *pdev = to_pci_dev(dev);
-	struct mmio_mailbox *mbox = &cxlds->mbox;
-	int irq, msgnum;
+	bool bg_irq;
 	u32 ctrl;
 	int rc;
 
@@ -1631,23 +1614,14 @@ int cxl_setup_mailbox(struct cxl_dev_state *cxlds, irq_handler_t thread_fn)
 	mbox->mbox_ctrl_addr = cxlds->regs.mbox;
 	INIT_DELAYED_WORK(&mds->security.poll_dwork, cxl_mbox_sanitize_work);
 
-	rc = mmio_setup_mailbox(mbox);
+	bg_irq = FIELD_GET(CXLDEV_MBOX_CAP_BG_CMD_IRQ, cap);
+	rc = mmio_setup_mailbox(mbox, bg_irq ? thread_fn : NULL, cxlds);
 	if (rc)
 		return rc;
 
 	/* background command interrupts are optional */
-	if (!(cap & CXLDEV_MBOX_CAP_BG_CMD_IRQ) || !thread_fn)
+	if (!bg_irq || !thread_fn)
 		return 0;
-
-	msgnum = FIELD_GET(CXLDEV_MBOX_CAP_IRQ_MSGNUM_MASK, cap);
-	irq = pci_irq_vector(to_pci_dev(dev), msgnum);
-	if (irq < 0)
-		return 0;
-
-	if (cxl_request_irq(cxlds, irq, thread_fn))
-		return 0;
-
-	dev_dbg(&pdev->dev, "Mailbox interrupt enabled\n");
 
 	/* enable background command mbox irq support */
 	ctrl = readl(mbox->mbox_ctrl_addr + CXLDEV_MBOX_CTRL_OFFSET);

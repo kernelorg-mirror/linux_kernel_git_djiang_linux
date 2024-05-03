@@ -2867,10 +2867,22 @@ struct mmio_mbox_ops {
 	int (*cmd_done)(struct mmio_mailbox *mbox, struct mmio_mbox_cmd *cmd);
 };
 
-int mmio_setup_mailbox(struct mmio_mailbox *mbox);
+int mmio_setup_mailbox(struct mmio_mailbox *mbox, irq_handler_t thread_fn,
+		       void *data);
 int pci_mmio_setup_mailbox(struct pci_dev *pdev,
 			   struct mmio_mailbox *mbox,
 			   void __iomem *mmb_addr);
 int mmio_mailbox_send(struct mmio_mailbox *mbox, struct mmio_mbox_cmd *cmd);
+
+/*
+ * Threaded irq dev_id's must be globally unique.  cxl_dev_id provides a unique
+ * wrapper object for each irq within the same cxlds.
+ */
+struct mmb_dev_id {
+	void *data;
+};
+
+int mmb_request_irq(struct device *dev, int irq, irq_handler_t thread_fn,
+		    void *data);
 
 #endif /* LINUX_PCI_H */

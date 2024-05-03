@@ -250,11 +250,29 @@ static const struct mmio_mbox_ops pci_mbox_ops = {
 	.mbox_send = mmio_mailbox_send,
 };
 
-int mmio_setup_mailbox(struct mmio_mailbox *mbox)
+int mmb_request_irq(struct device *dev, int irq, irq_handler_t thread_fn,
+		    void *data)
+{
+	struct mmb_dev_id *dev_id;
+
+	dev_id = devm_kzalloc(dev, sizeof(*dev_id), GFP_KERNEL);
+	if (!dev_id)
+		return -ENOMEM;
+
+	dev_id->data = data;
+
+	return devm_request_threaded_irq(dev, irq, NULL, thread_fn,
+					 IRQF_SHARED | IRQF_ONESHOT, NULL,
+					 dev_id);
+}
+EXPORT_SYMBOL_GPL(mmb_request_irq);
+
+int mmio_setup_mailbox(struct mmio_mailbox *mbox, irq_handler_t thread_fn, void *data)
 {
 	const int cap = readl(mbox->mbox_ctrl_addr + PCI_MMB_CAPS_OFFSET);
 	struct device *dev = mbox->dev;
 	unsigned long timeout;
+	int msgnum, irq;
 	bool mbox_ready;
 
 	mutex_init(&mbox->mbox_mutex);
@@ -304,6 +322,19 @@ int mmio_setup_mailbox(struct mmio_mailbox *mbox)
 
 	rcuwait_init(&mbox->mbox_wait);
 
+	if (!thread_fn)
+		return 0;
+
+	msgnum = FIELD_GET(PCI_MMB_CAP_IRQ_MSGNUM_MASK, cap);
+	irq = pci_irq_vector(to_pci_dev(dev), msgnum);
+	if (irq < 0)
+		return 0;
+
+	if (mmb_request_irq(dev, irq, thread_fn, data))
+		return 0;
+
+	dev_dbg(dev, "Mailbox interrupt enabled\n");
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mmio_setup_mailbox);
@@ -316,5 +347,5 @@ int pci_mmio_setup_mailbox(struct pci_dev *pdev,
 	mbox->mbox_ready_addr = mmb_addr;
 	mbox->mbox_ctrl_addr = mmb_addr;
 
-	return mmio_setup_mailbox(mbox);
+	return mmio_setup_mailbox(mbox, NULL, NULL);
 }

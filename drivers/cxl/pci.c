@@ -48,12 +48,12 @@ static irqreturn_t cxl_pci_mbox_irq(int irq, void *id)
 {
 	u64 reg;
 	u16 opcode;
-	struct cxl_dev_id *dev_id = id;
-	struct cxl_dev_state *cxlds = dev_id->cxlds;
+	struct mmb_dev_id *dev_id = id;
+	struct cxl_dev_state *cxlds = dev_id->data;
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlds);
 	struct mmio_mailbox *mbox = &cxlds->mbox;
 
-	if (!cxl_mbox_background_complete(cxlds))
+	if (!cxl_mbox_background_complete(&cxlds->mbox))
 		return IRQ_NONE;
 
 	reg = readq(cxlds->regs.mbox + CXLDEV_MBOX_BG_CMD_STATUS_OFFSET);
@@ -223,8 +223,8 @@ static bool cxl_alloc_irq_vectors(struct pci_dev *pdev)
 
 static irqreturn_t cxl_event_thread(int irq, void *id)
 {
-	struct cxl_dev_id *dev_id = id;
-	struct cxl_dev_state *cxlds = dev_id->cxlds;
+	struct mmb_dev_id *dev_id = id;
+	struct cxl_dev_state *cxlds = dev_id->data;
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlds);
 	u32 status;
 
@@ -258,7 +258,7 @@ static int cxl_event_req_irq(struct cxl_dev_state *cxlds, u8 setting)
 	if (irq < 0)
 		return irq;
 
-	return cxl_request_irq(cxlds, irq, cxl_event_thread);
+	return mmb_request_irq(&pdev->dev, irq, cxl_event_thread, cxlds);
 }
 
 static int cxl_event_get_int_policy(struct cxl_memdev_state *mds,
@@ -465,7 +465,7 @@ static int cxl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	irq_avail = cxl_alloc_irq_vectors(pdev);
 
-	rc = cxl_setup_mailbox(cxlds, irq_avail ? cxl_pci_mbox_irq : NULL);
+	rc = cxl_setup_mailbox(&cxlds->mbox, irq_avail ? cxl_pci_mbox_irq : NULL);
 	if (rc)
 		return rc;
 

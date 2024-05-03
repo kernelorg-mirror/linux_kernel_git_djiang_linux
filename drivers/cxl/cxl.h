@@ -844,18 +844,8 @@ void cxl_coordinates_combine(struct access_coordinate *out,
 			     struct access_coordinate *c1,
 			     struct access_coordinate *c2);
 
-/*
- * Threaded irq dev_id's must be globally unique.  cxl_dev_id provides a unique
- * wrapper object for each irq within the same cxlds.
- */
-struct cxl_dev_id {
-	struct cxl_dev_state *cxlds;
-};
-
-int cxl_request_irq(struct cxl_dev_state *cxlds, int irq,
-		    irq_handler_t thread_fn);
-int cxl_setup_mailbox(struct cxl_dev_state *cxlds, irq_handler_t thread_fn);
-bool cxl_mbox_background_complete(struct cxl_dev_state *cxlds);
+int cxl_setup_mailbox(struct mmio_mailbox *mbox, irq_handler_t thread_fn);
+bool cxl_mbox_background_complete(struct mmio_mailbox *mbox);
 
 /*
  * Unit test builds overrides this to __weak, find the 'strong' version
