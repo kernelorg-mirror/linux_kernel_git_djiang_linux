@@ -125,6 +125,7 @@ static irqreturn_t cxl_pci_mbox_irq(int irq, void *id)
 	struct cxl_dev_id *dev_id = id;
 	struct cxl_dev_state *cxlds = dev_id->cxlds;
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlds);
+	struct mmio_mailbox *mbox = &cxlds->mbox;
 
 	if (!cxl_mbox_background_complete(cxlds))
 		return IRQ_NONE;
@@ -132,13 +133,13 @@ static irqreturn_t cxl_pci_mbox_irq(int irq, void *id)
 	reg = readq(cxlds->regs.mbox + CXLDEV_MBOX_BG_CMD_STATUS_OFFSET);
 	opcode = FIELD_GET(CXLDEV_MBOX_BG_CMD_COMMAND_OPCODE_MASK, reg);
 	if (opcode == CXL_MBOX_OP_SANITIZE) {
-		mutex_lock(&mds->mbox_mutex);
+		mutex_lock(&mbox->mbox_mutex);
 		if (mds->security.sanitize_node)
 			mod_delayed_work(system_wq, &mds->security.poll_dwork, 0);
-		mutex_unlock(&mds->mbox_mutex);
+		mutex_unlock(&mbox->mbox_mutex);
 	} else {
 		/* short-circuit the wait in __cxl_pci_mbox_send_cmd() */
-		rcuwait_wake_up(&mds->mbox_wait);
+		rcuwait_wake_up(&mbox->mbox_wait);
 	}
 
 	return IRQ_HANDLED;
@@ -152,8 +153,9 @@ static void cxl_mbox_sanitize_work(struct work_struct *work)
 	struct cxl_memdev_state *mds =
 		container_of(work, typeof(*mds), security.poll_dwork.work);
 	struct cxl_dev_state *cxlds = &mds->cxlds;
+	struct mmio_mailbox *mbox = &cxlds->mbox;
 
-	mutex_lock(&mds->mbox_mutex);
+	guard(mutex)(&mbox->mbox_mutex);
 	if (cxl_mbox_background_complete(cxlds)) {
 		mds->security.poll_tmo_secs = 0;
 		if (mds->security.sanitize_node)
@@ -167,7 +169,6 @@ static void cxl_mbox_sanitize_work(struct work_struct *work)
 		mds->security.poll_tmo_secs = min(15 * 60, timeout);
 		schedule_delayed_work(&mds->security.poll_dwork, timeout * HZ);
 	}
-	mutex_unlock(&mds->mbox_mutex);
 }
 
 /**
@@ -197,12 +198,13 @@ static int __cxl_pci_mbox_send_cmd(struct cxl_memdev_state *mds,
 {
 	struct cxl_dev_state *cxlds = &mds->cxlds;
 	void __iomem *payload = cxlds->regs.mbox + CXLDEV_MBOX_PAYLOAD_OFFSET;
+	struct mmio_mailbox *mbox = &cxlds->mbox;
 	struct device *dev = cxlds->dev;
 	u64 cmd_reg, status_reg;
 	size_t out_len;
 	int rc;
 
-	lockdep_assert_held(&mds->mbox_mutex);
+	lockdep_assert_held(&mbox->mbox_mutex);
 
 	/*
 	 * Here are the steps from 8.2.8.4 of the CXL 2.0 spec.
@@ -315,7 +317,7 @@ static int __cxl_pci_mbox_send_cmd(struct cxl_memdev_state *mds,
 
 		timeout = mbox_cmd->poll_interval_ms;
 		for (i = 0; i < mbox_cmd->poll_count; i++) {
-			if (rcuwait_wait_event_timeout(&mds->mbox_wait,
+			if (rcuwait_wait_event_timeout(&mbox->mbox_wait,
 				       cxl_mbox_background_complete(cxlds),
 				       TASK_UNINTERRUPTIBLE,
 				       msecs_to_jiffies(timeout)) > 0)
@@ -360,7 +362,7 @@ success:
 		 */
 		size_t n;
 
-		n = min3(mbox_cmd->size_out, mds->payload_size, out_len);
+		n = min3(mbox_cmd->size_out, mbox->payload_size, out_len);
 		memcpy_fromio(mbox_cmd->payload_out, payload, n);
 		mbox_cmd->size_out = n;
 	} else {
@@ -373,11 +375,12 @@ success:
 static int cxl_pci_mbox_send(struct cxl_memdev_state *mds,
 			     struct mmio_mbox_cmd *cmd)
 {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
 	int rc;
 
-	mutex_lock_io(&mds->mbox_mutex);
+	mutex_lock_io(&mbox->mbox_mutex);
 	rc = __cxl_pci_mbox_send_cmd(mds, cmd);
-	mutex_unlock(&mds->mbox_mutex);
+	mutex_unlock(&mbox->mbox_mutex);
 
 	return rc;
 }
@@ -385,6 +388,7 @@ static int cxl_pci_mbox_send(struct cxl_memdev_state *mds,
 static int cxl_pci_setup_mailbox(struct cxl_memdev_state *mds, bool irq_avail)
 {
 	struct cxl_dev_state *cxlds = &mds->cxlds;
+	struct mmio_mailbox *mbox = &cxlds->mbox;
 	const int cap = readl(cxlds->regs.mbox + CXLDEV_MBOX_CAPS_OFFSET);
 	struct device *dev = cxlds->dev;
 	unsigned long timeout;
@@ -418,7 +422,7 @@ static int cxl_pci_setup_mailbox(struct cxl_memdev_state *mds, bool irq_avail)
 	}
 
 	mds->mbox_send = cxl_pci_mbox_send;
-	mds->payload_size =
+	mbox->payload_size =
 		1 << FIELD_GET(CXLDEV_MBOX_CAP_PAYLOAD_SIZE_MASK, cap);
 
 	/*
@@ -428,16 +432,16 @@ static int cxl_pci_setup_mailbox(struct cxl_memdev_state *mds, bool irq_avail)
 	 * there's no point in going forward. If the size is too large, there's
 	 * no harm is soft limiting it.
 	 */
-	mds->payload_size = min_t(size_t, mds->payload_size, SZ_1M);
-	if (mds->payload_size < 256) {
+	mbox->payload_size = min_t(size_t, mbox->payload_size, SZ_1M);
+	if (mbox->payload_size < 256) {
 		dev_err(dev, "Mailbox is too small (%zub)",
-			mds->payload_size);
+			mbox->payload_size);
 		return -ENXIO;
 	}
 
-	dev_dbg(dev, "Mailbox payload sized %zu", mds->payload_size);
+	dev_dbg(dev, "Mailbox payload sized %zu", mbox->payload_size);
 
-	rcuwait_init(&mds->mbox_wait);
+	rcuwait_init(&mbox->mbox_wait);
 	INIT_DELAYED_WORK(&mds->security.poll_dwork, cxl_mbox_sanitize_work);
 
 	/* background command interrupts are optional */
@@ -578,9 +582,10 @@ static void free_event_buf(void *buf)
  */
 static int cxl_mem_alloc_event_buf(struct cxl_memdev_state *mds)
 {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
 	struct cxl_get_event_payload *buf;
 
-	buf = kvmalloc(mds->payload_size, GFP_KERNEL);
+	buf = kvmalloc(mbox->payload_size, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 	mds->event.buf = buf;

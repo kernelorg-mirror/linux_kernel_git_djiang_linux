@@ -2837,4 +2837,16 @@ struct mmio_mbox_cmd {
 	u16 return_code;
 };
 
+/**
+ * struct mmio_mailbox - Context for storing mailbox related information
+ * @payload_size: Size of space for mailbox command payload.
+ * @mbox_mutex: Mutex to synchronize mailbox access.
+ * @mbox_wait: rcuwait for mailbox polling
+ */
+struct mmio_mailbox {
+	size_t payload_size;
+	struct mutex mbox_mutex;
+	struct rcuwait mbox_wait;
+};
+
 #endif /* LINUX_PCI_H */

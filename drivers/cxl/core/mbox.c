@@ -241,11 +241,12 @@ static const char *cxl_mem_opcode_to_name(u16 opcode)
 int cxl_internal_send_cmd(struct cxl_memdev_state *mds,
 			  struct mmio_mbox_cmd *mbox_cmd)
 {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
 	size_t out_size, min_out;
 	int rc;
 
-	if (mbox_cmd->size_in > mds->payload_size ||
-	    mbox_cmd->size_out > mds->payload_size)
+	if (mbox_cmd->size_in > mbox->payload_size ||
+	    mbox_cmd->size_out > mbox->payload_size)
 		return -E2BIG;
 
 	out_size = mbox_cmd->size_out;
@@ -337,39 +338,41 @@ static bool cxl_payload_from_user_allowed(u16 opcode, void *payload_in)
 	return true;
 }
 
-static int cxl_mbox_cmd_ctor(struct mmio_mbox_cmd *mbox,
+static int cxl_mbox_cmd_ctor(struct mmio_mbox_cmd *mbox_cmd,
 			     struct cxl_memdev_state *mds, u16 opcode,
 			     size_t in_size, size_t out_size, u64 in_payload)
 {
-	*mbox = (struct mmio_mbox_cmd) {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
+
+	*mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = opcode,
 		.size_in = in_size,
 	};
 
 	if (in_size) {
-		mbox->payload_in = vmemdup_user(u64_to_user_ptr(in_payload),
-						in_size);
-		if (IS_ERR(mbox->payload_in))
-			return PTR_ERR(mbox->payload_in);
+		mbox_cmd->payload_in = vmemdup_user(u64_to_user_ptr(in_payload),
+						    in_size);
+		if (IS_ERR(mbox_cmd->payload_in))
+			return PTR_ERR(mbox_cmd->payload_in);
 
-		if (!cxl_payload_from_user_allowed(opcode, mbox->payload_in)) {
+		if (!cxl_payload_from_user_allowed(opcode, mbox_cmd->payload_in)) {
 			dev_dbg(mds->cxlds.dev, "%s: input payload not allowed\n",
 				cxl_mem_opcode_to_name(opcode));
-			kvfree(mbox->payload_in);
+			kvfree(mbox_cmd->payload_in);
 			return -EBUSY;
 		}
 	}
 
 	/* Prepare to handle a full payload for variable sized output */
 	if (out_size == CXL_VARIABLE_PAYLOAD)
-		mbox->size_out = mds->payload_size;
+		mbox_cmd->size_out = mbox->payload_size;
 	else
-		mbox->size_out = out_size;
+		mbox_cmd->size_out = out_size;
 
-	if (mbox->size_out) {
-		mbox->payload_out = kvzalloc(mbox->size_out, GFP_KERNEL);
-		if (!mbox->payload_out) {
-			kvfree(mbox->payload_in);
+	if (mbox_cmd->size_out) {
+		mbox_cmd->payload_out = kvzalloc(mbox_cmd->size_out, GFP_KERNEL);
+		if (!mbox_cmd->payload_out) {
+			kvfree(mbox_cmd->payload_in);
 			return -ENOMEM;
 		}
 	}
@@ -386,6 +389,8 @@ static int cxl_to_mem_cmd_raw(struct cxl_mem_command *mem_cmd,
 			      const struct cxl_send_command *send_cmd,
 			      struct cxl_memdev_state *mds)
 {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
+
 	if (send_cmd->raw.rsvd)
 		return -EINVAL;
 
@@ -394,7 +399,7 @@ static int cxl_to_mem_cmd_raw(struct cxl_mem_command *mem_cmd,
 	 * gets passed along without further checking, so it must be
 	 * validated here.
 	 */
-	if (send_cmd->out.size > mds->payload_size)
+	if (send_cmd->out.size > mbox->payload_size)
 		return -EINVAL;
 
 	if (!cxl_mem_raw_command_allowed(send_cmd->raw.opcode))
@@ -482,6 +487,7 @@ static int cxl_validate_cmd_from_user(struct mmio_mbox_cmd *mbox_cmd,
 				      struct cxl_memdev_state *mds,
 				      const struct cxl_send_command *send_cmd)
 {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
 	struct cxl_mem_command mem_cmd;
 	int rc;
 
@@ -493,7 +499,7 @@ static int cxl_validate_cmd_from_user(struct mmio_mbox_cmd *mbox_cmd,
 	 * supports, but output can be arbitrarily large (simply write out as
 	 * much data as the hardware provides).
 	 */
-	if (send_cmd->in.size > mds->payload_size)
+	if (send_cmd->in.size > mbox->payload_size)
 		return -EINVAL;
 
 	/* Sanitize and construct a cxl_mem_command */
@@ -647,11 +653,12 @@ int cxl_send_cmd(struct cxl_memdev *cxlmd, struct cxl_send_command __user *s)
 static int cxl_xfer_log(struct cxl_memdev_state *mds, uuid_t *uuid,
 			u32 *size, u8 *out)
 {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
 	u32 remaining = *size;
 	u32 offset = 0;
 
 	while (remaining) {
-		u32 xfer_size = min_t(u32, remaining, mds->payload_size);
+		u32 xfer_size = min_t(u32, remaining, mbox->payload_size);
 		struct mmio_mbox_cmd mbox_cmd;
 		struct cxl_mbox_get_log log;
 		int rc;
@@ -740,17 +747,18 @@ static void cxl_walk_cel(struct cxl_memdev_state *mds, size_t size, u8 *cel)
 
 static struct cxl_mbox_get_supported_logs *cxl_get_gsl(struct cxl_memdev_state *mds)
 {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
 	struct cxl_mbox_get_supported_logs *ret;
 	struct mmio_mbox_cmd mbox_cmd;
 	int rc;
 
-	ret = kvmalloc(mds->payload_size, GFP_KERNEL);
+	ret = kvmalloc(mbox->payload_size, GFP_KERNEL);
 	if (!ret)
 		return ERR_PTR(-ENOMEM);
 
 	mbox_cmd = (struct mmio_mbox_cmd) {
 		.opcode = CXL_MBOX_OP_GET_SUPPORTED_LOGS,
-		.size_out = mds->payload_size,
+		.size_out = mbox->payload_size,
 		.payload_out = ret,
 		/* At least the record number field must be valid */
 		.min_out = 2,
@@ -875,6 +883,7 @@ static int cxl_clear_event_record(struct cxl_memdev_state *mds,
 				  struct cxl_get_event_payload *get_pl)
 {
 	struct cxl_mbox_clear_event_payload *payload;
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
 	u16 total = le16_to_cpu(get_pl->record_count);
 	u8 max_handles = CXL_CLEAR_EVENT_MAX_HANDLES;
 	size_t pl_size = struct_size(payload, handles, max_handles);
@@ -884,8 +893,8 @@ static int cxl_clear_event_record(struct cxl_memdev_state *mds,
 	int i;
 
 	/* Payload size may limit the max handles */
-	if (pl_size > mds->payload_size) {
-		max_handles = (mds->payload_size - sizeof(*payload)) /
+	if (pl_size > mbox->payload_size) {
+		max_handles = (mbox->payload_size - sizeof(*payload)) /
 			      sizeof(__le16);
 		pl_size = struct_size(payload, handles, max_handles);
 	}
@@ -943,6 +952,7 @@ free_pl:
 static void cxl_mem_get_records_log(struct cxl_memdev_state *mds,
 				    enum cxl_event_log_type type)
 {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
 	struct cxl_memdev *cxlmd = mds->cxlds.cxlmd;
 	struct device *dev = mds->cxlds.dev;
 	struct cxl_get_event_payload *payload;
@@ -959,7 +969,7 @@ static void cxl_mem_get_records_log(struct cxl_memdev_state *mds,
 			.payload_in = &log_type,
 			.size_in = sizeof(log_type),
 			.payload_out = payload,
-			.size_out = mds->payload_size,
+			.size_out = mbox->payload_size,
 			.min_out = struct_size(payload, records, 0),
 		};
 
@@ -1292,6 +1302,7 @@ int cxl_mem_get_poison(struct cxl_memdev *cxlmd, u64 offset, u64 len,
 		       struct cxl_region *cxlr)
 {
 	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlmd->cxlds);
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
 	struct cxl_mbox_poison_out *po;
 	struct cxl_mbox_poison_in pi;
 	int nr_records = 0;
@@ -1310,7 +1321,7 @@ int cxl_mem_get_poison(struct cxl_memdev *cxlmd, u64 offset, u64 len,
 			.opcode = CXL_MBOX_OP_GET_POISON,
 			.size_in = sizeof(pi),
 			.payload_in = &pi,
-			.size_out = mds->payload_size,
+			.size_out = mbox->payload_size,
 			.payload_out = po,
 			.min_out = struct_size(po, record, 0),
 		};
@@ -1346,7 +1357,9 @@ static void free_poison_buf(void *buf)
 /* Get Poison List output buffer is protected by mds->poison.lock */
 static int cxl_poison_alloc_buf(struct cxl_memdev_state *mds)
 {
-	mds->poison.list_out = kvmalloc(mds->payload_size, GFP_KERNEL);
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
+
+	mds->poison.list_out = kvmalloc(mbox->payload_size, GFP_KERNEL);
 	if (!mds->poison.list_out)
 		return -ENOMEM;
 
@@ -1382,7 +1395,7 @@ struct cxl_memdev_state *cxl_memdev_state_create(struct device *dev)
 		return ERR_PTR(-ENOMEM);
 	}
 
-	mutex_init(&mds->mbox_mutex);
+	mutex_init(&mds->cxlds.mbox.mbox_mutex);
 	mutex_init(&mds->event.log_lock);
 	mds->cxlds.dev = dev;
 	mds->cxlds.reg_map.host = dev;

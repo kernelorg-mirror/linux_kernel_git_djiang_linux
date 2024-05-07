@@ -104,13 +104,15 @@ static int cxl_pmem_get_config_size(struct cxl_memdev_state *mds,
 				    struct nd_cmd_get_config_size *cmd,
 				    unsigned int buf_len)
 {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
+
 	if (sizeof(*cmd) > buf_len)
 		return -EINVAL;
 
 	*cmd = (struct nd_cmd_get_config_size){
 		.config_size = mds->lsa_size,
 		.max_xfer =
-			mds->payload_size - sizeof(struct cxl_mbox_set_lsa),
+			mbox->payload_size - sizeof(struct cxl_mbox_set_lsa),
 	};
 
 	return 0;
