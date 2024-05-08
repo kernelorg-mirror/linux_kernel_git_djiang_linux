@@ -292,6 +292,14 @@ config VGA_ARB_MAX_GPUS
 	  Reserves space in the kernel to maintain resource locking for
 	  multiple GPUS.  The overhead for each GPU is very small.
 
+config PCI_MMIO_MAILBOX
+	bool "PCI MMIO mailbox support"
+	help
+	  This option enables support for PCI MMIO mailbox. This mailbox
+	  is used to communicate between the host and the PCI device.
+
+	  Say Y here if you want PCI MMIO mailbox support.
+
 source "drivers/pci/hotplug/Kconfig"
 source "drivers/pci/controller/Kconfig"
 source "drivers/pci/endpoint/Kconfig"

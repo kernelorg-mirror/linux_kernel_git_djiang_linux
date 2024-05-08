@@ -431,7 +431,6 @@ struct cxl_dev_state {
  * @poison: poison driver state info
  * @security: security driver state info
  * @fw: firmware upload / activation state
- * @mbox_send: @dev specific transport for transmitting mailbox commands
  * @ram_perf: performance data entry matched to RAM partition
  * @pmem_perf: performance data entry matched to PMEM partition
  *
@@ -460,9 +459,6 @@ struct cxl_memdev_state {
 	struct cxl_poison_state poison;
 	struct cxl_security_state security;
 	struct cxl_fw_state fw;
-
-	int (*mbox_send)(struct cxl_memdev_state *mds,
-			 struct mmio_mbox_cmd *cmd);
 };
 
 static inline struct cxl_memdev_state *

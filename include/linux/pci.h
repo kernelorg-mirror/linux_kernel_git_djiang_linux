@@ -2837,16 +2837,40 @@ struct mmio_mbox_cmd {
 	u16 return_code;
 };
 
+struct mmio_mbox_ops;
+
 /**
  * struct mmio_mailbox - Context for storing mailbox related information
+ * @dev: device hosts the mailbox
+ * @mbox_ready_addr: mmio addr that points to the register for mbox ready
+ * @mbox_ctrl_addr: mmio addr that points to the register for mbox control
  * @payload_size: Size of space for mailbox command payload.
  * @mbox_mutex: Mutex to synchronize mailbox access.
  * @mbox_wait: rcuwait for mailbox polling
+ * @ops: mailbox related callbacks
  */
 struct mmio_mailbox {
+	struct device *dev;
+	void __iomem *mbox_ready_addr;
+	void __iomem *mbox_ctrl_addr;
 	size_t payload_size;
 	struct mutex mbox_mutex;
 	struct rcuwait mbox_wait;
+	const struct mmio_mbox_ops *ops;
 };
+
+struct mmio_mbox_ops {
+	bool (*mbox_ready)(struct mmio_mailbox *mbox);
+	int (*mbox_send)(struct mmio_mailbox *mbox, struct mmio_mbox_cmd *cmd);
+	/* optional ops */
+	int (*cmd_prep)(struct mmio_mailbox *mbox, struct mmio_mbox_cmd *cmd);
+	int (*cmd_done)(struct mmio_mailbox *mbox, struct mmio_mbox_cmd *cmd);
+};
+
+int mmio_setup_mailbox(struct mmio_mailbox *mbox);
+int pci_mmio_setup_mailbox(struct pci_dev *pdev,
+			   struct mmio_mailbox *mbox,
+			   void __iomem *mmb_addr);
+int mmio_mailbox_send(struct mmio_mailbox *mbox, struct mmio_mbox_cmd *cmd);
 
 #endif /* LINUX_PCI_H */

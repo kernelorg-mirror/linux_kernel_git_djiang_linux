@@ -100,6 +100,45 @@ static u16 cxl_disabled_raw_commands[] = {
 	CXL_MBOX_OP_CLEAR_POISON,
 };
 
+static int cxl_mailbox_send(struct mmio_mailbox *mbox,
+			    struct mmio_mbox_cmd *cmd)
+{
+	int rc;
+
+	rc = mmio_mailbox_send(mbox, cmd);
+	if (rc)
+		return rc;
+
+	if (cmd->return_code != CXL_MBOX_CMD_RC_SUCCESS) {
+		dev_dbg(mbox->dev, "Mailbox operation had an error: %s\n",
+			cxl_mbox_cmd_rc2str(cmd));
+		return 0;
+	}
+
+	return 0;
+}
+
+static int cxl_internal_mailbox_send(struct mmio_mailbox *mbox,
+				     struct mmio_mbox_cmd *cmd)
+{
+	int rc;
+
+	if (!mbox->ops || !mbox->ops->mbox_send)
+		return -EOPNOTSUPP;
+
+	rc = mbox->ops->mbox_send(mbox, cmd);
+	if (rc)
+		return rc;
+
+	if (cmd->return_code != CXL_MBOX_CMD_RC_SUCCESS) {
+		dev_dbg(mbox->dev, "Mailbox operation had an error: %s\n",
+			cxl_mbox_cmd_rc2str(cmd));
+		return 0;
+	}
+
+	return 0;
+}
+
 /*
  * Command sets that RAW doesn't permit. All opcodes in this set are
  * disabled because they pass plain text security payloads over the
@@ -251,7 +290,7 @@ int cxl_internal_send_cmd(struct cxl_memdev_state *mds,
 
 	out_size = mbox_cmd->size_out;
 	min_out = mbox_cmd->min_out;
-	rc = mds->mbox_send(mds, mbox_cmd);
+	rc = cxl_internal_mailbox_send(mbox, mbox_cmd);
 	/*
 	 * EIO is reserved for a payload size mismatch and mbox_send()
 	 * may not return this error.
@@ -511,7 +550,7 @@ static int cxl_validate_cmd_from_user(struct mmio_mbox_cmd *mbox_cmd,
 	if (rc)
 		return rc;
 
-	/* Sanitize and construct a cxl_mbox_cmd */
+	/* Sanitize and construct a mmio_mbox_cmd */
 	return cxl_mbox_cmd_ctor(mbox_cmd, mds, mem_cmd.opcode,
 				 mem_cmd.info.size_in, mem_cmd.info.size_out,
 				 send_cmd->in.payload);
@@ -585,6 +624,7 @@ static int handle_mailbox_cmd_from_user(struct cxl_memdev_state *mds,
 					u64 out_payload, s32 *size_out,
 					u32 *retval)
 {
+	struct mmio_mailbox *mbox = &mds->cxlds.mbox;
 	struct device *dev = mds->cxlds.dev;
 	int rc;
 
@@ -595,7 +635,7 @@ static int handle_mailbox_cmd_from_user(struct cxl_memdev_state *mds,
 		cxl_mem_opcode_to_name(mbox_cmd->opcode),
 		mbox_cmd->opcode, mbox_cmd->size_in);
 
-	rc = mds->mbox_send(mds, mbox_cmd);
+	rc = cxl_internal_mailbox_send(mbox, mbox_cmd);
 	if (rc)
 		goto out;
 
@@ -1395,7 +1435,6 @@ struct cxl_memdev_state *cxl_memdev_state_create(struct device *dev)
 		return ERR_PTR(-ENOMEM);
 	}
 
-	mutex_init(&mds->cxlds.mbox.mbox_mutex);
 	mutex_init(&mds->event.log_lock);
 	mds->cxlds.dev = dev;
 	mds->cxlds.reg_map.host = dev;
@@ -1416,3 +1455,205 @@ void __init cxl_mbox_init(void)
 	debugfs_create_bool("raw_allow_all", 0600, mbox_debugfs,
 			    &cxl_raw_allow_all);
 }
+
+static bool cxl_mbox_ready(struct mmio_mailbox *mbox)
+{
+	u64 md_status;
+
+	md_status = readq(mbox->mbox_ready_addr + CXLMDEV_STATUS_OFFSET);
+	return !!(md_status & CXLMDEV_MBOX_IF_READY);
+}
+
+static int cxl_mbox_cmd_send_prep(struct mmio_mailbox *mbox,
+				  struct mmio_mbox_cmd *mbox_cmd)
+{
+	struct cxl_dev_state *cxlds = container_of(mbox, typeof(*cxlds), mbox);
+	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlds);
+
+	/*
+	 * With sanitize polling, hardware might be done and the poller still
+	 * not be in sync. Ensure no new command comes in until so. Keep the
+	 * hardware semantics and only allow device health status.
+	 */
+	if (mds->security.poll_tmo_secs == 0)
+		return 0;
+
+	if (mbox_cmd->opcode != CXL_MBOX_OP_GET_HEALTH_INFO)
+		return -EBUSY;
+
+	return 0;
+}
+
+bool cxl_mbox_background_complete(struct cxl_dev_state *cxlds)
+{
+	u64 reg;
+
+	reg = readq(cxlds->regs.mbox + CXLDEV_MBOX_BG_CMD_STATUS_OFFSET);
+	return FIELD_GET(CXLDEV_MBOX_BG_CMD_COMMAND_PCT_MASK, reg) == 100;
+}
+EXPORT_SYMBOL_NS_GPL(cxl_mbox_background_complete, CXL);
+
+static int cxl_mbox_cmd_send_done(struct mmio_mailbox *mbox,
+				  struct mmio_mbox_cmd *mbox_cmd)
+{
+	struct cxl_dev_state *cxlds = container_of(mbox, typeof(*cxlds), mbox);
+	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlds);
+	struct device *dev = mbox->dev;
+	u64 bg_status_reg;
+	int i, timeout;
+
+	/*
+	 * Handle the background command in a synchronous manner.
+	 *
+	 * All other mailbox commands will serialize/queue on the mbox_mutex,
+	 * which we currently hold. Furthermore this also guarantees that
+	 * cxl_mbox_background_complete() checks are safe amongst each other,
+	 * in that no new bg operation can occur in between.
+	 *
+	 * Background operations are timesliced in accordance with the nature
+	 * of the command. In the event of timeout, the mailbox state is
+	 * indeterminate until the next successful command submission and the
+	 * driver can get back in sync with the hardware state.
+	 */
+	if (mbox_cmd->return_code != CXL_MBOX_CMD_RC_BACKGROUND)
+		return 0;
+
+	/*
+	 * Sanitization is a special case which monopolizes the device
+	 * and cannot be timesliced. Handle asynchronously instead,
+	 * and allow userspace to poll(2) for completion.
+	 */
+	if (mbox_cmd->opcode == CXL_MBOX_OP_SANITIZE) {
+		if (mds->security.sanitize_active)
+			return -EBUSY;
+
+		/* give first timeout a second */
+		timeout = 1;
+		mds->security.poll_tmo_secs = timeout;
+		mds->security.sanitize_active = true;
+		schedule_delayed_work(&mds->security.poll_dwork, timeout * HZ);
+		dev_dbg(dev, "Sanitization operation started\n");
+		return 1;
+	}
+
+	dev_dbg(dev, "Mailbox background operation (0x%04x) started\n",
+		mbox_cmd->opcode);
+
+	timeout = mbox_cmd->poll_interval_ms;
+	for (i = 0; i < mbox_cmd->poll_count; i++) {
+		if (rcuwait_wait_event_timeout(&mds->cxlds.mbox.mbox_wait,
+			       cxl_mbox_background_complete(cxlds),
+			       TASK_UNINTERRUPTIBLE,
+			       msecs_to_jiffies(timeout)) > 0)
+			break;
+	}
+
+	if (!cxl_mbox_background_complete(cxlds)) {
+		dev_err(dev, "timeout waiting for background (%d ms)\n",
+			timeout * mbox_cmd->poll_count);
+		return -ETIMEDOUT;
+	}
+
+	bg_status_reg = readq(cxlds->regs.mbox +
+			      CXLDEV_MBOX_BG_CMD_STATUS_OFFSET);
+	mbox_cmd->return_code = FIELD_GET(CXLDEV_MBOX_BG_CMD_COMMAND_RC_MASK,
+					  bg_status_reg);
+	dev_dbg(dev, "Mailbox background operation (0x%04x) completed\n",
+		mbox_cmd->opcode);
+
+	return 0;
+}
+
+/*
+ * Sanitization operation polling mode.
+ */
+static void cxl_mbox_sanitize_work(struct work_struct *work)
+{
+	struct cxl_memdev_state *mds =
+		container_of(work, typeof(*mds), security.poll_dwork.work);
+	struct cxl_dev_state *cxlds = &mds->cxlds;
+	struct mmio_mailbox *mbox = &cxlds->mbox;
+
+	guard(mutex)(&mbox->mbox_mutex);
+	if (cxl_mbox_background_complete(cxlds)) {
+		mds->security.poll_tmo_secs = 0;
+		if (mds->security.sanitize_node)
+			sysfs_notify_dirent(mds->security.sanitize_node);
+		mds->security.sanitize_active = false;
+
+		dev_dbg(mbox->dev, "Sanitization operation ended\n");
+	} else {
+		int timeout = mds->security.poll_tmo_secs + 10;
+
+		mds->security.poll_tmo_secs = min(15 * 60, timeout);
+		schedule_delayed_work(&mds->security.poll_dwork, timeout * HZ);
+	}
+}
+
+int cxl_request_irq(struct cxl_dev_state *cxlds, int irq,
+		    irq_handler_t thread_fn)
+{
+	struct device *dev = cxlds->dev;
+	struct cxl_dev_id *dev_id;
+
+	dev_id = devm_kzalloc(dev, sizeof(*dev_id), GFP_KERNEL);
+	if (!dev_id)
+		return -ENOMEM;
+	dev_id->cxlds = cxlds;
+
+	return devm_request_threaded_irq(dev, irq, NULL, thread_fn,
+					 IRQF_SHARED | IRQF_ONESHOT, NULL,
+					 dev_id);
+}
+EXPORT_SYMBOL_NS_GPL(cxl_request_irq, CXL);
+
+static const struct mmio_mbox_ops cxl_mbox_ops = {
+	.mbox_ready = cxl_mbox_ready,
+	.mbox_send = cxl_mailbox_send,
+	.cmd_prep = cxl_mbox_cmd_send_prep,
+	.cmd_done = cxl_mbox_cmd_send_done,
+};
+
+int cxl_setup_mailbox(struct cxl_dev_state *cxlds, irq_handler_t thread_fn)
+{
+	const int cap = readl(cxlds->regs.mbox + CXLDEV_MBOX_CAPS_OFFSET);
+	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlds);
+	struct device *dev = cxlds->dev;
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct mmio_mailbox *mbox = &cxlds->mbox;
+	int irq, msgnum;
+	u32 ctrl;
+	int rc;
+
+	mbox->dev = &pdev->dev;
+	mbox->ops = &cxl_mbox_ops;
+	mbox->mbox_ready_addr = cxlds->regs.memdev;
+	mbox->mbox_ctrl_addr = cxlds->regs.mbox;
+	INIT_DELAYED_WORK(&mds->security.poll_dwork, cxl_mbox_sanitize_work);
+
+	rc = mmio_setup_mailbox(mbox);
+	if (rc)
+		return rc;
+
+	/* background command interrupts are optional */
+	if (!(cap & CXLDEV_MBOX_CAP_BG_CMD_IRQ) || !thread_fn)
+		return 0;
+
+	msgnum = FIELD_GET(CXLDEV_MBOX_CAP_IRQ_MSGNUM_MASK, cap);
+	irq = pci_irq_vector(to_pci_dev(dev), msgnum);
+	if (irq < 0)
+		return 0;
+
+	if (cxl_request_irq(cxlds, irq, thread_fn))
+		return 0;
+
+	dev_dbg(&pdev->dev, "Mailbox interrupt enabled\n");
+
+	/* enable background command mbox irq support */
+	ctrl = readl(mbox->mbox_ctrl_addr + CXLDEV_MBOX_CTRL_OFFSET);
+	ctrl |= CXLDEV_MBOX_CTRL_BG_CMD_IRQ;
+	writel(ctrl, mbox->mbox_ctrl_addr + CXLDEV_MBOX_CTRL_OFFSET);
+
+	return 0;
+}
+EXPORT_SYMBOL_NS_GPL(cxl_setup_mailbox, CXL);
