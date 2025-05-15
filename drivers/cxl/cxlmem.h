@@ -45,6 +45,8 @@
  * @endpoint: connection to the CXL port topology for this memory device
  * @id: id number of this memdev instance.
  * @depth: endpoint port depth
+ * @cur_scrub_cycle: current scrub cycle set for this device
+ * @cur_region_id: id number of a backed region (if any) for which current scrub cycle set
  */
 struct cxl_memdev {
 	struct device dev;
@@ -56,6 +58,10 @@ struct cxl_memdev {
 	struct cxl_port *endpoint;
 	int id;
 	int depth;
+#ifdef CONFIG_CXL_EDAC_SCRUB
+	u8 cur_scrub_cycle;
+	int cur_region_id;
+#endif
 };
 
 static inline struct cxl_memdev *to_cxl_memdev(struct device *dev)
@@ -852,6 +858,16 @@ int cxl_mem_get_poison(struct cxl_memdev *cxlmd, u64 offset, u64 len,
 int cxl_trigger_poison_list(struct cxl_memdev *cxlmd);
 int cxl_inject_poison(struct cxl_memdev *cxlmd, u64 dpa);
 int cxl_clear_poison(struct cxl_memdev *cxlmd, u64 dpa);
+
+#if IS_ENABLED(CONFIG_CXL_EDAC_MEM_FEATURES)
+int devm_cxl_memdev_edac_register(struct cxl_memdev *cxlmd);
+int devm_cxl_region_edac_register(struct cxl_region *cxlr);
+#else
+static inline int devm_cxl_memdev_edac_register(struct cxl_memdev *cxlmd)
+{ return 0; }
+static inline int devm_cxl_region_edac_register(struct cxl_region *cxlr)
+{ return 0; }
+#endif
 
 #ifdef CONFIG_CXL_SUSPEND
 void cxl_mem_active_inc(void);
