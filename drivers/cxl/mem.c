@@ -123,7 +123,12 @@ static int cxl_mem_probe(struct device *dev)
 		}
 	}
 
-	if (dport->rch)
+	/*
+	 * RCH dports are registered exclusively on root ports via
+	 * devm_cxl_add_rch_dport(), so is_cxl_root() is equivalent to
+	 * dport->rch without dereferencing the unstabilised dport pointer.
+	 */
+	if (is_cxl_root(parent_port))
 		endpoint_parent = parent_port->uport_dev;
 	else
 		endpoint_parent = &parent_port->dev;
