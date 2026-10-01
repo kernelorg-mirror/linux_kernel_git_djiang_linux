@@ -119,3 +119,60 @@ void cxl_commit_start_switch(void __iomem *hdm,
 	writel(ctrl, hdm + CXL_HDM_DECODER0_CTRL_OFFSET(id));
 }
 EXPORT_SYMBOL_FOR_MODULES(cxl_commit_start_switch, "cxl_core");
+
+/*
+ * Decode the control, base and size registers of one decoder into @config.
+ * @config is written only when every field decodes.
+ */
+int cxl_hdm_unpack_decoder(struct cxl_decoder_config *config, int id, u32 ctrl,
+			   u64 base, u64 size)
+{
+	bool committed = FIELD_GET(CXL_HDM_DECODER0_CTRL_COMMITTED, ctrl);
+	enum cxl_decoder_type target_type = 0;
+	int interleave_granularity;
+	int interleave_ways;
+	unsigned long flags = 0;
+	struct range hpa_range;
+	int rc;
+
+	if (!committed)
+		size = 0;
+	if (base == U64_MAX || size == U64_MAX)
+		return -ENXIO;
+
+	hpa_range = (struct range) {
+		.start = base,
+		.end = base + size - 1,
+	};
+
+	if (committed) {
+		flags |= CXL_DECODER_F_ENABLE;
+		if (ctrl & CXL_HDM_DECODER0_CTRL_LOCK)
+			flags |= CXL_DECODER_F_LOCK;
+		if (FIELD_GET(CXL_HDM_DECODER0_CTRL_HOSTONLY, ctrl))
+			target_type = CXL_DECODER_HOSTONLYMEM;
+		else
+			target_type = CXL_DECODER_DEVMEM;
+	}
+
+	rc = eiw_to_ways(FIELD_GET(CXL_HDM_DECODER0_CTRL_IW_MASK, ctrl),
+			 &interleave_ways);
+	if (rc)
+		return rc;
+	rc = eig_to_granularity(FIELD_GET(CXL_HDM_DECODER0_CTRL_IG_MASK, ctrl),
+				&interleave_granularity);
+	if (rc)
+		return rc;
+
+	*config = (struct cxl_decoder_config) {
+		.id = id,
+		.hpa_range = hpa_range,
+		.interleave_ways = interleave_ways,
+		.interleave_granularity = interleave_granularity,
+		.target_type = target_type,
+		.flags = flags,
+	};
+
+	return 0;
+}
+EXPORT_SYMBOL_FOR_MODULES(cxl_hdm_unpack_decoder, "cxl_core");
