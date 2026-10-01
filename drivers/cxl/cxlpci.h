@@ -102,4 +102,14 @@ static inline void devm_cxl_port_ras_setup(struct cxl_port *port)
 }
 #endif
 
+/* Return the HDM cache slot of @pdev, or NULL without CXL reset support. */
+static inline struct cxl_hdm_info **cxl_pci_hdm_slot(struct pci_dev *pdev)
+{
+#ifdef CONFIG_CXL_RESET
+	return pdev ? &pdev->hdm : NULL;
+#else
+	return NULL;
+#endif
+}
+
 #endif /* __CXL_PCI_H__ */

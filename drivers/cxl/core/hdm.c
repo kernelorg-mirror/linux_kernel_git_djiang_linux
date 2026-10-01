@@ -6,6 +6,7 @@
 #include <cxl/hdm.h>
 
 #include "cxlmem.h"
+#include "cxlpci.h"
 #include "core.h"
 
 /**
@@ -742,6 +743,63 @@ cxl_endpoint_decoder_snapshot(struct cxl_endpoint_decoder *cxled,
 	};
 }
 
+/*
+ * Keep the PCI-owned HDM cache of a CXL memory device in step with its
+ * endpoint decoders, so reset recovery need not walk the CXL topology.
+ */
+static void cxl_hdm_refresh_decoder(struct cxl_hdm *cxlhdm,
+				    struct cxl_decoder *cxld)
+{
+	void __iomem *hdm = cxlhdm->regs.hdm_decoder;
+	struct cxl_endpoint_decoder_settings *settings;
+	int id = cxld->config.id;
+	struct cxl_hdm_info **slot;
+	struct cxl_hdm_info *info;
+	u32 global_ctrl;
+
+	/* Only CXL memory devices cache HDM state. */
+	if (!is_endpoint_decoder(&cxld->dev) || !hdm)
+		return;
+
+	struct pci_dev *pdev __free(pci_dev_put) =
+		cxl_port_get_uport_pci_dev(cxlhdm->port);
+	slot = cxl_pci_hdm_slot(pdev);
+	if (!slot)
+		return;
+
+	guard(rwsem_write)(&cxl_rwsem.dpa);
+	info = *slot;
+	if (!info)
+		return;
+	if (id < 0 || id >= info->decoder_count) {
+		pci_warn(pdev, "CXL HDM decoder %d exceeds cached count %d\n",
+			 id, info->decoder_count);
+		return;
+	}
+
+	/*
+	 * Keep the last good value if the device does not respond, for
+	 * example after a failed reset left memory decode disabled.
+	 */
+	global_ctrl = readl(hdm + CXL_HDM_DECODER_CTRL_OFFSET);
+	if (!PCI_POSSIBLE_ERROR(global_ctrl))
+		info->global_ctrl = global_ctrl;
+	settings = &info->settings[id];
+
+	/*
+	 * A disabled decoder's software object may retain its old range and
+	 * skip. Leave only the decoder id in the cached settings so stale state
+	 * is not restored as an enabled decode.
+	 */
+	if (cxld->config.flags & CXL_DECODER_F_ENABLE)
+		cxl_endpoint_decoder_snapshot(to_cxl_endpoint_decoder(&cxld->dev),
+					      settings);
+	else
+		*settings = (struct cxl_endpoint_decoder_settings) {
+			.config.id = id,
+		};
+}
+
 static void setup_hw_decoder(struct cxl_decoder *cxld, void __iomem *hdm)
 {
 	struct cxl_endpoint_decoder_settings settings;
@@ -809,6 +867,7 @@ static int cxl_decoder_commit(struct cxl_decoder *cxld)
 	}
 	port->commit_end++;
 	cxld->config.flags |= CXL_DECODER_F_ENABLE;
+	cxl_hdm_refresh_decoder(cxlhdm, cxld);
 
 	return 0;
 }
@@ -881,6 +940,7 @@ static void cxl_decoder_reset(struct cxl_decoder *cxld)
 	writel(0, hdm + CXL_HDM_DECODER0_BASE_LOW_OFFSET(id));
 
 	cxld->config.flags &= ~CXL_DECODER_F_ENABLE;
+	cxl_hdm_refresh_decoder(cxlhdm, cxld);
 
 	/* Userspace is now responsible for reconfiguring this decoder */
 	if (is_endpoint_decoder(&cxld->dev)) {
@@ -1088,8 +1148,32 @@ static int devm_cxl_enumerate_decoders(struct cxl_hdm *cxlhdm,
 {
 	void __iomem *hdm = cxlhdm->regs.hdm_decoder;
 	struct cxl_port *port = cxlhdm->port;
+	/*
+	 * Decoders emulated from DVSEC ranges do not describe the HDM decoder
+	 * registers that the PCI cache holds, so leave the cache alone.
+	 */
+	bool emulated = should_emulate_decoders(info);
 	int i;
 	u64 dpa_base = 0;
+
+	if (is_cxl_endpoint(port) && hdm && !emulated) {
+		struct pci_dev *pdev __free(pci_dev_put) =
+			cxl_port_get_uport_pci_dev(port);
+		struct cxl_hdm_info **slot = cxl_pci_hdm_slot(pdev);
+
+		if (slot) {
+			guard(rwsem_read)(&cxl_rwsem.dpa);
+
+			if (*slot &&
+			    (*slot)->decoder_count != cxlhdm->decoder_count) {
+				pci_warn(pdev,
+					 "CXL HDM cache decoder count mismatch: cached=%d hdm=%d\n",
+					 (*slot)->decoder_count,
+					 cxlhdm->decoder_count);
+				return -ENXIO;
+			}
+		}
+	}
 
 	cxl_settle_decoders(cxlhdm);
 
@@ -1129,6 +1213,8 @@ static int devm_cxl_enumerate_decoders(struct cxl_hdm *cxlhdm,
 			put_device(&cxld->dev);
 			return rc;
 		}
+		if (!emulated)
+			cxl_hdm_refresh_decoder(cxlhdm, cxld);
 		rc = add_hdm_decoder(port, cxld);
 		if (rc) {
 			dev_warn(&port->dev,
