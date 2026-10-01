@@ -6,6 +6,7 @@
 #include <linux/delay.h>
 #include <linux/pci.h>
 #include <linux/pci-doe.h>
+#include <cxl/hdm.h>
 #include <cxl/pci.h>
 #include <linux/aer.h>
 #include <cxlpci.h>
@@ -180,6 +181,21 @@ int cxl_await_media_ready(struct cxl_dev_state *cxlds)
 }
 EXPORT_SYMBOL_NS_GPL(cxl_await_media_ready, "CXL");
 
+static void cxl_hdm_cache_dvsec_ctrl(struct pci_dev *pdev, u16 ctrl)
+{
+	struct cxl_hdm_info **slot = cxl_pci_hdm_slot(pdev);
+
+	if (!slot)
+		return;
+
+	guard(rwsem_write)(&cxl_rwsem.dpa);
+	if (!*slot)
+		return;
+
+	(*slot)->dvsec_ctrl = ctrl;
+	(*slot)->dvsec_ctrl_valid = true;
+}
+
 static int cxl_set_mem_enable(struct cxl_dev_state *cxlds, u16 val)
 {
 	struct pci_dev *pdev = to_pci_dev(cxlds->dev);
@@ -191,8 +207,10 @@ static int cxl_set_mem_enable(struct cxl_dev_state *cxlds, u16 val)
 	if (rc)
 		return pcibios_err_to_errno(rc);
 
-	if ((ctrl & PCI_DVSEC_CXL_MEM_ENABLE) == val)
+	if ((ctrl & PCI_DVSEC_CXL_MEM_ENABLE) == val) {
+		cxl_hdm_cache_dvsec_ctrl(pdev, ctrl);
 		return 1;
+	}
 	ctrl &= ~PCI_DVSEC_CXL_MEM_ENABLE;
 	ctrl |= val;
 
@@ -200,6 +218,7 @@ static int cxl_set_mem_enable(struct cxl_dev_state *cxlds, u16 val)
 	if (rc)
 		return pcibios_err_to_errno(rc);
 
+	cxl_hdm_cache_dvsec_ctrl(pdev, ctrl);
 	return 0;
 }
 
@@ -290,7 +309,7 @@ int cxl_dvsec_rr_decode(struct cxl_dev_state *cxlds,
 	 * capable, there is no point in continuing to enable CXL.mem.
 	 */
 	hdm_count = FIELD_GET(PCI_DVSEC_CXL_HDM_COUNT, cap);
-	if (!hdm_count || hdm_count > 2)
+	if (!cxl_dvsec_hdm_count_valid(hdm_count))
 		return -EINVAL;
 
 	/*

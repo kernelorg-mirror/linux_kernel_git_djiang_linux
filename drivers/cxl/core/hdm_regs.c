@@ -3,6 +3,7 @@
 #include <linux/bitfield.h>
 #include <linux/bug.h>
 #include <linux/delay.h>
+#include <linux/device.h>
 #include <linux/export.h>
 #include <linux/io.h>
 #include <linux/overflow.h>
@@ -182,3 +183,103 @@ int cxl_hdm_unpack_decoder(struct cxl_decoder_config *config, int id, u32 ctrl,
 	return 0;
 }
 EXPORT_SYMBOL_FOR_MODULES(cxl_hdm_unpack_decoder, "cxl_core");
+
+/**
+ * cxl_hdm_decoder_count_mapped() - read the decoder count of a mapped block
+ * @hdm: mapped HDM decoder capability
+ * @size: size of the mapping
+ *
+ * Return: the decoder count, or a negative errno if the count is reserved or
+ * the mapping cannot hold every decoder.
+ */
+int cxl_hdm_decoder_count_mapped(void __iomem *hdm, resource_size_t size)
+{
+	int count;
+
+	count = cxl_hdm_decoder_count(readl(hdm + CXL_HDM_DECODER_CAP_OFFSET));
+	if (count < 0)
+		return count;
+
+	/* The last decoder's target-list high register must fit in the mapping. */
+	if (CXL_HDM_DECODER0_TL_HIGH(count - 1) + sizeof(u32) > size)
+		return -ENXIO;
+
+	return count;
+}
+
+/* Read one endpoint decoder; a disabled decoder keeps only its id. */
+static int
+cxl_hdm_read_decoder_settings(void __iomem *hdm, int id,
+			      struct cxl_endpoint_decoder_settings *settings)
+{
+	struct cxl_decoder_config config;
+	u64 base, size, skip;
+	u32 ctrl;
+	int rc;
+
+	ctrl = readl(hdm + CXL_HDM_DECODER0_CTRL_OFFSET(id));
+	base = ((u64)readl(hdm + CXL_HDM_DECODER0_BASE_HIGH_OFFSET(id)) << 32) |
+	       readl(hdm + CXL_HDM_DECODER0_BASE_LOW_OFFSET(id));
+	size = ((u64)readl(hdm + CXL_HDM_DECODER0_SIZE_HIGH_OFFSET(id)) << 32) |
+	       readl(hdm + CXL_HDM_DECODER0_SIZE_LOW_OFFSET(id));
+	skip = ((u64)readl(hdm + CXL_HDM_DECODER0_SKIP_HIGH(id)) << 32) |
+	       readl(hdm + CXL_HDM_DECODER0_SKIP_LOW(id));
+
+	rc = cxl_hdm_unpack_decoder(&config, id, ctrl, base, size);
+	if (rc)
+		return rc;
+
+	if (!(config.flags & CXL_DECODER_F_ENABLE)) {
+		*settings = (struct cxl_endpoint_decoder_settings) {
+			.config.id = id,
+		};
+		return 0;
+	}
+
+	*settings = (struct cxl_endpoint_decoder_settings) {
+		.config = config,
+		.skip = skip,
+	};
+
+	return 0;
+}
+
+/**
+ * cxl_hdm_read_state() - read endpoint HDM decoder state
+ * @dev: device for error messages
+ * @hdm: mapped HDM decoder capability
+ * @info: state to fill; @info->decoder_count must be set
+ *
+ * Return: 0 on success, or a negative errno if a decoder holds an invalid
+ * configuration or the decoder count changed while reading.
+ */
+int cxl_hdm_read_state(struct device *dev, void __iomem *hdm,
+		       struct cxl_hdm_info *info)
+{
+	int count, rc;
+
+	info->global_ctrl = readl(hdm + CXL_HDM_DECODER_CTRL_OFFSET);
+
+	for (int i = 0; i < info->decoder_count; i++) {
+		rc = cxl_hdm_read_decoder_settings(hdm, i, &info->settings[i]);
+		if (rc) {
+			dev_err(dev,
+				"CXL HDM decoder %d has invalid configuration: %d\n",
+				i, rc);
+			return rc;
+		}
+	}
+
+	/*
+	 * A changed decoder count means the snapshot no longer describes the
+	 * complete hardware state. Reject it rather than publish a partial cache.
+	 */
+	count = cxl_hdm_decoder_count(readl(hdm + CXL_HDM_DECODER_CAP_OFFSET));
+	if (count != info->decoder_count) {
+		dev_err(dev, "CXL HDM decoder count changed from %d to %d\n",
+			info->decoder_count, count);
+		return -ENXIO;
+	}
+
+	return 0;
+}
