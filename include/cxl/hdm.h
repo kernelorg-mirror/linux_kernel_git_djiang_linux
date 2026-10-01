@@ -50,6 +50,8 @@ struct cxl_hdm_info {
 int cxl_hdm_decoder_count_mapped(void __iomem *hdm, resource_size_t size);
 int cxl_hdm_read_state(struct device *dev, void __iomem *hdm,
 		       struct cxl_hdm_info *info);
+int cxl_hdm_restore_state(struct device *dev, void __iomem *hdm,
+			  const struct cxl_hdm_info *snapshot);
 
 void cxl_hdm_cache_publish(struct cxl_hdm_info **slot,
 			   struct cxl_hdm_info *info);
