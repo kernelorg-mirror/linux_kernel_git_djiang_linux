@@ -883,10 +883,17 @@ static int __cxl_get_range_and_link(struct device *pf0, struct device *pfx,
 
 	struct device *region_dev __free(put_device) = &cxlr->dev;
 
-	/* A region without a driver would never unbind @pfx */
+	/*
+	 * Only link to a region whose driver is bound and not unbinding. The
+	 * region drops its device lock while it unbinds its consumers, but its
+	 * link state stays "unbinding" until it is done, and only changes
+	 * under this lock. A link added while it unbinds would be left in the
+	 * "supplier unbind" state. A region without a driver would never
+	 * unbind @pfx at all.
+	 */
 	guard(device)(&cxlr->dev);
-	if (!cxlr->dev.driver)
-		return -ENODEV;
+	if (READ_ONCE(cxlr->dev.links.status) != DL_DEV_DRIVER_BOUND)
+		return -EPROBE_DEFER;
 
 	scoped_guard(rwsem_read, &cxl_rwsem.region) {
 		if (cxlr->params.state != CXL_CONFIG_COMMIT)
@@ -925,8 +932,8 @@ static int __cxl_get_range_and_link(struct device *pf0, struct device *pfx,
  * deletion can hold both while it waits for in-flight probes of the
  * region's link consumers, which would include this one.
  *
- * Return: 0, -EPROBE_DEFER if @pf0 has no region attached yet, or another
- * error.
+ * Return: 0, -EPROBE_DEFER if @pf0 has no region attached yet or the region
+ * driver is not bound, or another error.
  */
 int cxl_get_range_and_link(struct device *pf0, struct device *pfx,
 			   struct range *range)
