@@ -867,8 +867,9 @@ static int __cxl_get_range_and_link(struct device *pf0, struct device *pfx,
 	struct cxl_region *cxlr;
 	struct range hpa_range;
 
+	/* PF0 may still be probing */
 	if (!mem_dev)
-		return -ENODEV;
+		return -EPROBE_DEFER;
 	cxlmd = to_cxl_memdev(mem_dev);
 
 	/* Cleared once the region goes away, so never a deleted region */
@@ -920,33 +921,20 @@ static int __cxl_get_range_and_link(struct device *pf0, struct device *pfx,
  * @pfx: device to link to PF0's memdev region, the link consumer.
  * @range: to be set with the PF0's memdev attach region range.
  *
- * Return: 0 or error.
+ * Don't take @pf0's device lock or the root decoder's regions_lock. Region
+ * deletion can hold both while it waits for in-flight probes of the
+ * region's link consumers, which would include this one.
+ *
+ * Return: 0, -EPROBE_DEFER if @pf0 has no region attached yet, or another
+ * error.
  */
 int cxl_get_range_and_link(struct device *pf0, struct device *pfx,
 			   struct range *range)
 {
-	int rc;
-
 	if (!pf0 || !pfx)
 		return -EINVAL;
 
-	/*
-	 * PF0 cxl memdev once created and region attached can only be removed
-	 * when PF0 unbinds from its driver which implies to obtain the device
-	 * lock before the unwinding starts. If this call from other PF races
-	 * with such unbinding:
-	 *
-	 * 1) if this next lock is obtained first, the device link is
-	 *    created and the later unwinding will trigger consumer (PF
-	 *    calling here) unbinding first.
-	 *
-	 *  2) if it is the unbinding the one getting the lock first, the
-	 *    memdev will not be there aymore.
-	 */
-	device_lock(pf0);
-	rc = __cxl_get_range_and_link(pf0, pfx, range);
-	device_unlock(pf0);
-	return rc;
+	return __cxl_get_range_and_link(pf0, pfx, range);
 }
 EXPORT_SYMBOL_NS_GPL(cxl_get_range_and_link, "CXL");
 
