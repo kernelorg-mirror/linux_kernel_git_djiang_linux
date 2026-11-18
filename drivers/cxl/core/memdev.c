@@ -854,14 +854,7 @@ err:
 
 static int match_memdev_by_parent_device(struct device *dev, const void *data)
 {
-	const struct device *pf_dev = data;
-	struct cxl_memdev *cxlmd;
-
-	if (!is_cxl_memdev(dev))
-		return 0;
-
-	cxlmd = to_cxl_memdev(dev);
-	return (cxlmd->cxlds->dev == pf_dev);
+	return is_cxl_memdev(dev) && dev->parent == data;
 }
 
 static int __cxl_get_range_and_link(struct device *pf0, struct device *pfx,
@@ -870,37 +863,50 @@ static int __cxl_get_range_and_link(struct device *pf0, struct device *pfx,
 	struct device *mem_dev __free(put_device) =
 		bus_find_device(&cxl_bus_type, NULL, pf0,
 				match_memdev_by_parent_device);
-	struct cxl_attach_region *attach;
 	struct cxl_memdev *cxlmd;
+	struct cxl_region *cxlr;
+	struct range hpa_range;
 
 	if (!mem_dev)
 		return -ENODEV;
-
 	cxlmd = to_cxl_memdev(mem_dev);
-	attach = container_of(cxlmd->attach, struct cxl_attach_region, attach);
 
-	/*
-	 * The cxlmd object does exist and it can be found in the cxl bus after
-	 * creation but before attach probe setting the proper HPA range. If so,
-	 * the caller will need to try later.
-	 */
-	if (attach->hpa_range.end == CXL_RESOURCE_NONE)
+	/* Cleared once the region goes away, so never a deleted region */
+	scoped_guard(mutex, &cxlmd->attach_lock) {
+		cxlr = cxlmd->attach_region;
+		if (cxlr)
+			get_device(&cxlr->dev);
+	}
+	if (!cxlr)
 		return -EPROBE_DEFER;
+
+	struct device *region_dev __free(put_device) = &cxlr->dev;
+
+	/* A region without a driver would never unbind @pfx */
+	guard(device)(&cxlr->dev);
+	if (!cxlr->dev.driver)
+		return -ENODEV;
+
+	scoped_guard(rwsem_read, &cxl_rwsem.region) {
+		if (cxlr->params.state != CXL_CONFIG_COMMIT)
+			return -ENODEV;
+		hpa_range = (struct range) {
+			.start = cxlr->params.res->start,
+			.end = cxlr->params.res->end,
+		};
+	}
 
 	/*
 	 * Create the device link between the region and the consumer device.
 	 * AUTOREMOVE_CONSUMER means the link implicitly to be removed if the
 	 * consumer unbinds first with no consequences for the supplier.
 	 */
-	if (!device_link_add(pfx, &attach->cxlr->dev,
-			     DL_FLAG_AUTOREMOVE_CONSUMER)) {
+	if (!device_link_add(pfx, &cxlr->dev, DL_FLAG_AUTOREMOVE_CONSUMER)) {
 		dev_err(pfx, "device link creation failed\n");
 		return -ENODEV;
 	}
 
-	range->start = attach->hpa_range.start;
-	range->end = attach->hpa_range.end;
-
+	*range = hpa_range;
 	return 0;
 }
 

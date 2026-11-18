@@ -4224,7 +4224,6 @@ int cxl_memdev_attach_region(struct cxl_memdev *cxlmd)
 	if (rc)
 		return rc;
 
-	attach->cxlr = cxlr;
 	scoped_guard(mutex, &cxlmd->attach_lock) {
 		attach->hpa_range = (struct range) {
 			.start = cxlr->params.res->start,

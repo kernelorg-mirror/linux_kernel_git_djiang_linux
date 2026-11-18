@@ -122,7 +122,6 @@ struct cxl_memdev_attach {
 /**
  * struct cxl_attach_region - coordinate mapping a region at memdev registration
  * @attach: common core attachment descriptor
- * @cxlr: cxl region the memdev is attached to.
  * @hpa_range: physical address range of the region
  * @revoke: driver callback, stop all access to @hpa_range
  * @unbind_nb: bus notifier, disarms before the driver's remove()
@@ -135,7 +134,6 @@ struct cxl_memdev_attach {
  */
 struct cxl_attach_region {
 	struct cxl_memdev_attach attach;
-	struct cxl_region *cxlr;
 	struct range hpa_range;
 	void (*revoke)(struct cxl_dev_state *cxlds);
 	struct notifier_block unbind_nb;
