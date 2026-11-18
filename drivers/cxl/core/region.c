@@ -2885,6 +2885,8 @@ static ssize_t region_show(struct device *dev, struct device_attribute *attr,
 }
 DEVICE_ATTR_RO(region);
 
+static bool cxl_region_has_memdev_attach(struct cxl_region *cxlr);
+
 static ssize_t delete_region_store(struct device *dev,
 				   struct device_attribute *attr,
 				   const char *buf, size_t len)
@@ -2904,6 +2906,18 @@ static ssize_t delete_region_store(struct device *dev,
 	cxlr = xa_load(&cxlrd->regions, id);
 	if (!cxlr || !sysfs_streq(buf, dev_name(&cxlr->dev)))
 		return -ENODEV;
+
+	/*
+	 * A firmware-assembled region with an attach owner (Type2 driver) is
+	 * in use until that driver unbinds, which also removes the region.
+	 * Its decoders stay programmed, so its HPA must not be handed out
+	 * again while the driver is bound.
+	 */
+	scoped_guard(rwsem_read, &cxl_rwsem.region) {
+		if (test_bit(CXL_REGION_F_AUTO, &cxlr->flags) &&
+		    cxl_region_has_memdev_attach(cxlr))
+			return -EBUSY;
+	}
 
 	unregister_region(cxlr);
 
