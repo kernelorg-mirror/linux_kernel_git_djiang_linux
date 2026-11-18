@@ -74,7 +74,7 @@ int efx_cxl_init(struct efx_probe_data *probe_data)
 		return -ENODEV;
 	}
 
-	cxl->cxlmd = devm_cxl_probe_mem(&cxl->cxlds, &cxl_pio_range);
+	cxl->cxlmd = devm_cxl_probe_mem(&cxl->cxlds, &cxl_pio_range, NULL);
 	if (IS_ERR(cxl->cxlmd)) {
 		pci_err(pci_dev, "CXL accel memdev creation failed\n");
 		return PTR_ERR(cxl->cxlmd);

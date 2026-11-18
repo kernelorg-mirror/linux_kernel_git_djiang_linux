@@ -2559,6 +2559,41 @@ static struct cxl_region *to_cxl_region(struct device *dev)
 	return container_of(dev, struct cxl_region, dev);
 }
 
+/*
+ * Tell attach owners (Type2 drivers) the region is going away while its
+ * decoders and HPA are still intact. Every region removal goes through
+ * unregister_region(), so this is the one place the owner needs to hear
+ * about it.
+ */
+static void cxl_region_notify_attach(struct cxl_region *cxlr)
+{
+	struct cxl_memdev *cxlmds[CXL_DECODER_MAX_INTERLEAVE];
+	struct cxl_region_params *p = &cxlr->params;
+	int n = 0;
+
+	lockdep_assert_held(&to_cxl_root_decoder(cxlr->dev.parent)->regions_lock);
+
+	scoped_guard(rwsem_read, &cxl_rwsem.region) {
+		for (int i = 0; i < p->interleave_ways; i++) {
+			struct cxl_endpoint_decoder *cxled = p->targets[i];
+			struct cxl_memdev *cxlmd;
+
+			if (!cxled)
+				continue;
+			cxlmd = cxled_to_memdev(cxled);
+			if (!cxlmd->attach || !cxlmd->attach->region_lost)
+				continue;
+			get_device(&cxlmd->dev);
+			cxlmds[n++] = cxlmd;
+		}
+	}
+
+	for (int i = 0; i < n; i++) {
+		cxlmds[i]->attach->region_lost(cxlmds[i], cxlr);
+		put_device(&cxlmds[i]->dev);
+	}
+}
+
 static void unregister_region(struct cxl_region *cxlr)
 {
 	struct cxl_root_decoder *cxlrd = to_cxl_root_decoder(cxlr->dev.parent);
@@ -2567,6 +2602,13 @@ static void unregister_region(struct cxl_region *cxlr)
 
 	xa_erase(&cxlrd->regions, cxlr->id);
 	device_del(&cxlr->dev);
+
+	/*
+	 * device_del() unbound any device-link consumers of the region (e.g.
+	 * other functions of a multi-function device), so notify the owner
+	 * last. Its decoders and HPA are still intact.
+	 */
+	cxl_region_notify_attach(cxlr);
 
 	/*
 	 * Now that region sysfs is shutdown, the parameter block is now
@@ -4182,13 +4224,41 @@ int cxl_memdev_attach_region(struct cxl_memdev *cxlmd)
 	if (rc)
 		return rc;
 
-	attach->hpa_range = (struct range) {
-		.start = cxlr->params.res->start,
-		.end = cxlr->params.res->end,
-	};
+	scoped_guard(mutex, &cxlmd->attach_lock) {
+		attach->hpa_range = (struct range) {
+			.start = cxlr->params.res->start,
+			.end = cxlr->params.res->end,
+		};
+		cxlmd->attach_region = cxlr;
+	}
 	return 0;
 }
 EXPORT_SYMBOL_FOR_MODULES(cxl_memdev_attach_region, "cxl_mem");
+
+void cxl_memdev_attach_region_lost(struct cxl_memdev *cxlmd,
+				   struct cxl_region *cxlr)
+{
+	struct cxl_attach_region *attach =
+		container_of(cxlmd->attach, typeof(*attach), attach);
+
+	guard(mutex)(&cxlmd->attach_lock);
+	if (cxlmd->attach_region != cxlr)
+		return;
+	cxlmd->attach_region = NULL;
+
+	dev_dbg(&cxlmd->dev, "%s going away, revoking %pra\n",
+		dev_name(&cxlr->dev), &attach->hpa_range);
+	if (attach->revoke)
+		attach->revoke(cxlmd->cxlds);
+}
+EXPORT_SYMBOL_FOR_MODULES(cxl_memdev_attach_region_lost, "cxl_mem");
+
+void cxl_memdev_attach_disarm(struct cxl_memdev *cxlmd)
+{
+	guard(mutex)(&cxlmd->attach_lock);
+	cxlmd->attach_region = NULL;
+}
+EXPORT_SYMBOL_FOR_MODULES(cxl_memdev_attach_disarm, "cxl_mem");
 
 /*
  * The presence of an attach method indicates that the region is designated for

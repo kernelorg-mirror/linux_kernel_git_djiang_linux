@@ -219,10 +219,39 @@ struct cxl_memdev *devm_cxl_add_classdev(struct cxl_dev_state *cxlds)
 }
 EXPORT_SYMBOL_NS_GPL(devm_cxl_add_classdev, "CXL");
 
+static int cxl_attach_unbind_notify(struct notifier_block *nb,
+				    unsigned long action, void *data)
+{
+	struct cxl_attach_region *attach =
+		container_of(nb, struct cxl_attach_region, unbind_nb);
+
+	if (data != attach->host)
+		return NOTIFY_DONE;
+	if (action != BUS_NOTIFY_UNBIND_DRIVER &&
+	    action != BUS_NOTIFY_DRIVER_NOT_BOUND)
+		return NOTIFY_DONE;
+
+	/*
+	 * Sent before remove(), or before devres unwind on probe failure:
+	 * wait out an in-flight revoke, block new ones.
+	 */
+	if (attach->cxlmd)
+		cxl_memdev_attach_disarm(attach->cxlmd);
+	return NOTIFY_OK;
+}
+
+static void cxl_attach_unregister_notifier(void *data)
+{
+	struct cxl_attach_region *attach = data;
+
+	bus_unregister_notifier(attach->host->bus, &attach->unbind_nb);
+}
+
 /**
  * devm_cxl_probe_mem - Add a CXL memory device and probe its region
  * @cxlds: CXL device state to associate with the memdev
  * @hpa_range: CXL.mem physical address range result
+ * @revoke: optional callback to stop HPA access before the region goes away
  *
  * Upon return the device will have had a chance to attach to the
  * cxl_mem driver, but may fail to attach if the CXL topology is not ready
@@ -233,12 +262,29 @@ EXPORT_SYMBOL_NS_GPL(devm_cxl_add_classdev, "CXL");
  *
  * The parent of the resulting device and the devm context for allocations is
  * @cxlds->dev.
+ *
+ * @revoke, if set, is called once if the region backing @hpa_range is about
+ * to be torn down for a reason other than @cxlds->dev unbinding (CXL port,
+ * memdev or region unbind / delete, cxl_acpi removal). The region, its
+ * decoders and the HPA are still intact when it runs. On return the driver
+ * must no longer access @hpa_range. The driver is unbound later,
+ * asynchronously, as before.
+ *
+ * @revoke may run before this function returns, so it needs to synchronize
+ * with the rest of the driver's probe. It never runs concurrently with or
+ * after the driver's remove() or its probe failure unwind. The driver core
+ * notification for either waits for an in-flight @revoke and blocks new
+ * ones first. @revoke is called with CXL core locks held, so it must not call
+ * back into the CXL core nor take the device lock of @cxlds->dev. It may
+ * sleep.
  */
 struct cxl_memdev *devm_cxl_probe_mem(struct cxl_dev_state *cxlds,
-				      struct range *hpa_range)
+				      struct range *hpa_range,
+				      void (*revoke)(struct cxl_dev_state *cxlds))
 {
 	struct cxl_attach_region *attach = devm_kmalloc_obj(cxlds->dev, *attach);
 	struct cxl_memdev *cxlmd;
+	int rc;
 
 	if (!attach)
 		return ERR_PTR(-ENOMEM);
@@ -246,12 +292,35 @@ struct cxl_memdev *devm_cxl_probe_mem(struct cxl_dev_state *cxlds,
 	*attach = (struct cxl_attach_region) {
 		.attach = {
 			   .probe = cxl_memdev_attach_region,
+			   .region_lost = cxl_memdev_attach_region_lost,
+			   .disarm = cxl_memdev_attach_disarm,
 		},
 		.hpa_range = { 0, -1 },
+		.revoke = revoke,
+		.unbind_nb.notifier_call = cxl_attach_unbind_notify,
+		.host = cxlds->dev,
 	};
+	if (revoke) {
+		rc = bus_register_notifier(cxlds->dev->bus, &attach->unbind_nb);
+		if (rc)
+			return ERR_PTR(rc);
+		rc = devm_add_action_or_reset(cxlds->dev,
+					      cxl_attach_unregister_notifier,
+					      attach);
+		if (rc)
+			return ERR_PTR(rc);
+	}
 
 	cxlmd = __devm_cxl_add_memdev(cxlds, &attach->attach);
+	if (IS_ERR(cxlmd))
+		return cxlmd;
+
+	/* Don't hand out a range whose region already went away */
+	guard(mutex)(&cxlmd->attach_lock);
+	if (!cxlmd->attach_region)
+		return ERR_PTR(-ENXIO);
 	*hpa_range = attach->hpa_range;
+	attach->cxlmd = cxlmd;
 	return cxlmd;
 }
 EXPORT_SYMBOL_NS_GPL(devm_cxl_probe_mem, "CXL");

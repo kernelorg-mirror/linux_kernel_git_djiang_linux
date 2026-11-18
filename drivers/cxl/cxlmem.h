@@ -44,6 +44,10 @@
  * @cxl_nvd: optional bridge to an nvdimm if the device supports pmem
  * @endpoint: connection to the CXL port topology for this memory device
  * @attach: creator of this memdev depends on CXL link attach to operate
+ * @attach_lock: protects @attach_region and serializes revoking it
+ * @attach_region: region the @attach owner uses, NULL once that region goes
+ *		   away or the owner unbinds. Lives with the memdev, not the
+ *		   owner's devm state, so a memdev reference is enough to read it.
  * @id: id number of this memdev instance.
  * @depth: endpoint port depth
  * @scrub_cycle: current scrub cycle set for this device
@@ -61,6 +65,8 @@ struct cxl_memdev {
 	struct cxl_nvdimm *cxl_nvd;
 	struct cxl_port *endpoint;
 	const struct cxl_memdev_attach *attach;
+	struct mutex attach_lock; /* protects @attach_region */
+	struct cxl_region *attach_region;
 	int id;
 	int depth;
 	u8 scrub_cycle;
@@ -97,14 +103,30 @@ static inline bool is_cxl_endpoint(struct cxl_port *port)
 	return is_cxl_memdev(port->uport_dev);
 }
 
+/**
+ * struct cxl_memdev_attach - memdev attach provider operations
+ * @probe: attach the memdev, runs in cxl_mem_probe() context
+ * @region_lost: @cxlr is being unregistered and @cxlmd is one of its
+ *		 targets. Called with the root decoder regions_lock held, after
+ *		 the region device is deleted and before its decoders are torn
+ *		 down.
+ * @disarm: the attach owner is unbinding; no further @region_lost
+ *	    notifications are wanted. Waits for an in-flight one to finish.
+ */
 struct cxl_memdev_attach {
 	int (*probe)(struct cxl_memdev *cxlmd);
+	void (*region_lost)(struct cxl_memdev *cxlmd, struct cxl_region *cxlr);
+	void (*disarm)(struct cxl_memdev *cxlmd);
 };
 
 /**
  * struct cxl_attach_region - coordinate mapping a region at memdev registration
  * @attach: common core attachment descriptor
  * @hpa_range: physical address range of the region
+ * @revoke: driver callback, stop all access to @hpa_range
+ * @unbind_nb: bus notifier, disarms before the driver's remove()
+ * @host: device whose unbind disarms @revoke (the cxlds->dev)
+ * @cxlmd: the memdev, set once devm_cxl_probe_mem() succeeds
  *
  * For the common simple case of a CXL device with private (non-general purpose
  * / "accelerator") memory, enumerate firmware instantiated region, or
@@ -113,15 +135,25 @@ struct cxl_memdev_attach {
 struct cxl_attach_region {
 	struct cxl_memdev_attach attach;
 	struct range hpa_range;
+	void (*revoke)(struct cxl_dev_state *cxlds);
+	struct notifier_block unbind_nb;
+	struct device *host;
+	struct cxl_memdev *cxlmd;
 };
 
 #ifdef CONFIG_CXL_REGION
 int cxl_memdev_attach_region(struct cxl_memdev *cxlmd);
+void cxl_memdev_attach_region_lost(struct cxl_memdev *cxlmd,
+				   struct cxl_region *cxlr);
+void cxl_memdev_attach_disarm(struct cxl_memdev *cxlmd);
 #else
 static inline int cxl_memdev_attach_region(struct cxl_memdev *cxlmd)
 {
 	return -EOPNOTSUPP;
 }
+
+#define cxl_memdev_attach_region_lost NULL
+#define cxl_memdev_attach_disarm NULL
 #endif
 
 struct cxl_memdev *devm_cxl_add_classdev(struct cxl_dev_state *cxlds);

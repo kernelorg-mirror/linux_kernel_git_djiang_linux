@@ -752,6 +752,13 @@ static void cxl_memdev_unregister(void *_cxlmd)
 	struct cxl_memdev *cxlmd = _cxlmd;
 	struct device *dev = &cxlmd->dev;
 
+	/*
+	 * The attach owner is unbinding and has already stopped using the
+	 * region. Don't call back into it while the region unwinds below.
+	 */
+	if (cxlmd->attach && cxlmd->attach->disarm)
+		cxlmd->attach->disarm(cxlmd);
+
 	cdev_device_del(&cxlmd->cdev, dev);
 	cxl_memdev_shutdown(dev);
 	put_device(dev);
@@ -834,6 +841,7 @@ static struct cxl_memdev *cxl_memdev_alloc(struct cxl_dev_state *cxlds,
 		dev->type = &cxl_class_memdev_type;
 	device_set_pm_not_required(dev);
 	INIT_WORK(&cxlmd->detach_work, detach_memdev);
+	mutex_init(&cxlmd->attach_lock);
 
 	cdev = &cxlmd->cdev;
 	cdev_init(cdev, fops);
