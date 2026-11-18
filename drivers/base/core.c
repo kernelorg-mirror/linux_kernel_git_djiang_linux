@@ -744,6 +744,14 @@ postcore_initcall(devlink_class_init);
 #define DL_ADD_VALID_FLAGS (DL_MANAGED_LINK_FLAGS | DL_FLAG_STATELESS | \
 			    DL_FLAG_PM_RUNTIME | DL_FLAG_RPM_ACTIVE)
 
+static bool device_link_supplier_ready(struct device *supplier)
+{
+	/* no PM devices never enter dpm_list, so check registration directly */
+	if (device_pm_not_required(supplier))
+		return device_is_registered(supplier);
+	return device_pm_initialized(supplier);
+}
+
 /**
  * device_link_add - Create a link between two devices.
  * @consumer: Consumer end of the link.
@@ -840,7 +848,7 @@ struct device_link *device_link_add(struct device *consumer,
 	 * SYNC_STATE_ONLY link, we don't check for reverse dependencies
 	 * because it only affects sync_state() callbacks.
 	 */
-	if ((!device_pm_not_required(supplier) && !device_pm_initialized(supplier))
+	if (!device_link_supplier_ready(supplier)
 	    || (!(flags & DL_FLAG_SYNC_STATE_ONLY) &&
 		  device_is_dependent(consumer, supplier))) {
 		link = NULL;
