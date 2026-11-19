@@ -758,6 +758,9 @@ static void cxl_memdev_unregister(void *_cxlmd)
 
 	cdev_device_del(&cxlmd->cdev, dev);
 	cxl_memdev_shutdown(dev);
+	/* A detach queued for this memdev has nothing left to unbind */
+	if (cancel_work(&cxlmd->detach_work))
+		put_device(dev);
 	cxl_memdev_release_attach_region(cxlmd);
 	put_device(dev);
 }
@@ -773,10 +776,20 @@ static void detach_memdev(struct work_struct *work)
 	 * is required. In that case, @cxlmd detach escalates to parent device
 	 * detach.
 	 */
-	if (cxlmd->attach)
-		device_release_driver(cxlmd->dev.parent);
-	else
+	if (cxlmd->attach) {
+		bool shut;
+
+		/*
+		 * A shut-down memdev's parent has already unbound; don't unbind
+		 * a driver that bound to it since.
+		 */
+		scoped_guard(rwsem_read, &cxl_memdev_rwsem)
+			shut = !cxlmd->cxlds;
+		if (!shut)
+			device_release_driver(cxlmd->dev.parent);
+	} else {
 		device_release_driver(&cxlmd->dev);
+	}
 	put_device(&cxlmd->dev);
 }
 
