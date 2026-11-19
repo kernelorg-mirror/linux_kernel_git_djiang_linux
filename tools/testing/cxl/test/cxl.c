@@ -2026,8 +2026,14 @@ err:
 	return rc;
 }
 
+static bool type2_type3;
+/* In cxl_mem[] so is_mock_dev() treats it as a mock device */
+#define cxl_type2_t3 cxl_mem[NR_CXL_TYPE2_ACCEL]
+
 static void cxl_type2_mem_exit(void)
 {
+	platform_device_unregister(cxl_type2_t3);
+	cxl_type2_t3 = NULL;
 	cxl_type2_fn_exit();
 	for (int i = NR_CXL_TYPE2_ACCEL - 1; i >= 0; i--) {
 		struct platform_device *pdev = cxl_mem[i];
@@ -2078,6 +2084,19 @@ static int cxl_type2_mem_init(void)
 	rc = cxl_type2_fn_init();
 	if (rc)
 		goto err_mem;
+
+	if (type2_type3) {
+		/* A Type3 memdev on host bridge 0's other root port */
+		struct platform_device *pdev;
+
+		pdev = platform_device_alloc("cxl_mem", 1);
+		if (!pdev)
+			return 0;
+		pdev->dev.parent = &cxl_root_port[NR_CXL_HOST_BRIDGES]->dev;
+		set_dev_node(&pdev->dev, numa_map_to_online_node(1));
+		if (cxl_mock_platform_device_add(pdev, &cxl_type2_t3))
+			cxl_type2_t3 = NULL;
+	}
 
 	return 0;
 
@@ -2621,6 +2640,8 @@ module_param(type2_hostonly, bool, 0444);
 MODULE_PARM_DESC(type2_hostonly, "Type 2 window also allows type 3");
 module_param(type2_functions, uint, 0444);
 module_param(type2_accels, uint, 0444);
+module_param(type2_type3, bool, 0444);
+MODULE_PARM_DESC(type2_type3, "add a type3 memdev on host bridge 0 with type2_test");
 MODULE_PARM_DESC(type2_accels, "type2 accelerators under host bridge 0 (max 2)");
 MODULE_PARM_DESC(type2_functions, "other functions sharing the type2 region (max 4)");
 module_param(mock_zero_size_decoders, bool, 0444);
