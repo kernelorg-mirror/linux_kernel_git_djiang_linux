@@ -734,6 +734,8 @@ static int free_hpa(struct cxl_region *cxlr)
 	return 0;
 }
 
+static bool cxl_region_has_memdev_attach(struct cxl_region *cxlr);
+
 static ssize_t size_store(struct device *dev, struct device_attribute *attr,
 			  const char *buf, size_t len)
 {
@@ -748,6 +750,10 @@ static ssize_t size_store(struct device *dev, struct device_attribute *attr,
 	ACQUIRE(rwsem_write_kill, rwsem)(&cxl_rwsem.region);
 	if ((rc = ACQUIRE_ERR(rwsem_write_kill, &rwsem)))
 		return rc;
+
+	/* A Type2 driver uses this HPA until it detaches */
+	if (cxl_region_has_memdev_attach(cxlr))
+		return -EBUSY;
 
 	if (val)
 		rc = alloc_hpa(cxlr, val);
@@ -2407,6 +2413,11 @@ static size_t store_targetN(struct cxl_region *cxlr, const char *buf, int pos,
 			    size_t len)
 {
 	int rc;
+
+	/* A Type2 driver's region keeps its targets until the driver detaches */
+	scoped_guard(rwsem_read, &cxl_rwsem.region)
+		if (cxl_region_has_memdev_attach(cxlr))
+			return -EBUSY;
 
 	if (sysfs_streq(buf, "\n"))
 		rc = detach_target(cxlr, pos);
@@ -4265,11 +4276,11 @@ static bool cxl_region_has_memdev_attach(struct cxl_region *cxlr)
 {
 	struct cxl_region_params *p = &cxlr->params;
 
-	for (int i = 0; i < p->nr_targets; i++) {
+	/* A region built from sysfs can have empty positions */
+	for (int i = 0; i < p->interleave_ways; i++) {
 		struct cxl_endpoint_decoder *cxled = p->targets[i];
-		struct cxl_memdev *cxlmd = cxled_to_memdev(cxled);
 
-		if (cxlmd->attach)
+		if (cxled && cxled_to_memdev(cxled)->attach)
 			return true;
 	}
 
