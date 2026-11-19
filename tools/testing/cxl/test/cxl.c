@@ -1986,8 +1986,49 @@ static void cxl_type3_mem_exit(void)
 	}
 }
 
+#define NR_CXL_TYPE2_FN 4
+static unsigned int type2_functions;
+static struct platform_device *cxl_type2_fn[NR_CXL_TYPE2_FN];
+
+static void cxl_type2_fn_exit(void)
+{
+	for (int i = NR_CXL_TYPE2_FN - 1; i >= 0; i--) {
+		platform_device_unregister(cxl_type2_fn[i]);
+		cxl_type2_fn[i] = NULL;
+	}
+}
+
+/* Other functions of accelerator 0, sharing its CXL region */
+static int cxl_type2_fn_init(void)
+{
+	unsigned int nr = min_t(unsigned int, type2_functions, NR_CXL_TYPE2_FN);
+	int rc;
+
+	for (unsigned int i = 0; i < nr; i++) {
+		struct platform_device *pdev;
+
+		pdev = platform_device_alloc("cxl_type2_accel_fn", i + 1);
+		if (!pdev) {
+			rc = -ENOMEM;
+			goto err;
+		}
+		pdev->dev.parent = &cxl_root_port[0]->dev;
+		rc = platform_device_add(pdev);
+		if (rc) {
+			platform_device_put(pdev);
+			goto err;
+		}
+		cxl_type2_fn[i] = pdev;
+	}
+	return 0;
+err:
+	cxl_type2_fn_exit();
+	return rc;
+}
+
 static void cxl_type2_mem_exit(void)
 {
+	cxl_type2_fn_exit();
 	for (int i = NR_CXL_TYPE2_ACCEL - 1; i >= 0; i--) {
 		struct platform_device *pdev = cxl_mem[i];
 
@@ -2027,6 +2068,10 @@ static int cxl_type2_mem_init(void)
 		if (rc)
 			goto err_mem;
 	}
+
+	rc = cxl_type2_fn_init();
+	if (rc)
+		goto err_mem;
 
 	return 0;
 
@@ -2568,6 +2613,8 @@ module_param(type2_test, bool, 0444);
 MODULE_PARM_DESC(type2_test, "Enable type 2 support testing");
 module_param(type2_hostonly, bool, 0444);
 MODULE_PARM_DESC(type2_hostonly, "Type 2 window also allows type 3");
+module_param(type2_functions, uint, 0444);
+MODULE_PARM_DESC(type2_functions, "other functions sharing the type2 region (max 4)");
 module_param(mock_zero_size_decoders, bool, 0444);
 MODULE_PARM_DESC(mock_zero_size_decoders,
 		 "Mock committed, locked, empty decoders under host-bridge0");
