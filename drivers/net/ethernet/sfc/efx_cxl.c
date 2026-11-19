@@ -42,6 +42,7 @@ static int efx_cxl_non_pf0_init(struct efx_probe_data *probe_data)
 	struct range cxl_pio_range;
 	struct efx_cxl *cxl;
 	u64 devfn;
+	int rc;
 
 	devfn = PCI_FUNC(pci_dev->devfn);
 
@@ -56,9 +57,17 @@ static int efx_cxl_non_pf0_init(struct efx_probe_data *probe_data)
 	if (!pcie_is_cxl(pf0_pci_dev))
 		return 0;
 
-	if (!devm_cxl_add_region_user(&pf0_pci_dev->dev, &pci_dev->dev,
-				      &cxl_pio_range))
-		return  -EPROBE_DEFER;
+	/*
+	 * Keeps the HPA reserved until this function unbinds. If the region
+	 * goes away first, the CXL core unbinds this function.
+	 */
+	rc = devm_cxl_add_region_user(&pf0_pci_dev->dev, &pci_dev->dev,
+				      &cxl_pio_range);
+	/* PF0 is bound without CXL: use the legacy PIO buffers */
+	if (rc == -ENODEV)
+		return 0;
+	if (rc)
+		return rc;
 
 	cxl = kzalloc_obj(*cxl, GFP_KERNEL);
 	if (!cxl)
