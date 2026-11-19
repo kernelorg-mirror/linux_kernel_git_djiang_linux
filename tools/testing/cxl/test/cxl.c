@@ -29,7 +29,7 @@ static bool mock_zero_size_decoders;
 #define NR_CXL_SWITCH_PORTS 2
 #define NR_CXL_PORT_DECODERS 8
 #define NR_BRIDGES (NR_CXL_HOST_BRIDGES + NR_CXL_SINGLE_HOST + NR_CXL_RCH)
-#define NR_CXL_TYPE2_ACCEL 1
+#define NR_CXL_TYPE2_ACCEL 2
 
 #define MOCK_AUTO_REGION_SIZE_DEFAULT SZ_512M
 static int mock_auto_region_size = MOCK_AUTO_REGION_SIZE_DEFAULT;
@@ -2048,12 +2048,18 @@ static void cxl_mem_exit(void)
 	cxl_type3_mem_exit();
 }
 
+static unsigned int type2_accels = 1;
+
 static int cxl_type2_mem_init(void)
 {
+	unsigned int nr = clamp_t(unsigned int, type2_accels, 1,
+				  NR_CXL_TYPE2_ACCEL);
 	int i, rc;
 
-	for (i = 0; i < NR_CXL_TYPE2_ACCEL; i++) {
-		struct platform_device *dport = cxl_root_port[i];
+	for (i = 0; i < nr; i++) {
+		/* Root ports i * NR_CXL_HOST_BRIDGES all sit on host bridge 0 */
+		struct platform_device *dport =
+			cxl_root_port[i * NR_CXL_HOST_BRIDGES];
 		struct platform_device *pdev;
 
 		pdev = platform_device_alloc("cxl_type2_accel", i);
@@ -2614,6 +2620,8 @@ MODULE_PARM_DESC(type2_test, "Enable type 2 support testing");
 module_param(type2_hostonly, bool, 0444);
 MODULE_PARM_DESC(type2_hostonly, "Type 2 window also allows type 3");
 module_param(type2_functions, uint, 0444);
+module_param(type2_accels, uint, 0444);
+MODULE_PARM_DESC(type2_accels, "type2 accelerators under host bridge 0 (max 2)");
 MODULE_PARM_DESC(type2_functions, "other functions sharing the type2 region (max 4)");
 module_param(mock_zero_size_decoders, bool, 0444);
 MODULE_PARM_DESC(mock_zero_size_decoders,
