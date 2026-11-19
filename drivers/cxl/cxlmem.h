@@ -44,9 +44,12 @@
  * @cxl_nvd: optional bridge to an nvdimm if the device supports pmem
  * @endpoint: connection to the CXL port topology for this memory device
  * @attach: creator of this memdev depends on CXL link attach to operate
- * @attach_lock: protects @attach_region and @attach_detaching
+ * @attach_lock: protects @attach_region, @attach_users, @attach_functions
+ *		 and @attach_detaching
  * @attach_region: region the @attach owner uses, with a reference held until
- *		   the owner detaches
+ *		   its last user detaches
+ * @attach_users: the owner plus each function in @attach_functions
+ * @attach_functions: other functions of the device that use @attach_region
  * @attach_detaching: the @attach owner has started its own teardown
  * @id: id number of this memdev instance.
  * @depth: endpoint port depth
@@ -65,8 +68,10 @@ struct cxl_memdev {
 	struct cxl_nvdimm *cxl_nvd;
 	struct cxl_port *endpoint;
 	const struct cxl_memdev_attach *attach;
-	struct mutex attach_lock; /* protects attach_region, attach_detaching */
+	struct mutex attach_lock; /* protects the attach_* fields below */
 	struct cxl_region *attach_region;
+	unsigned int attach_users;
+	struct list_head attach_functions;
 	bool attach_detaching;
 	int id;
 	int depth;

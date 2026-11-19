@@ -853,6 +853,7 @@ static struct cxl_memdev *cxl_memdev_alloc(struct cxl_dev_state *cxlds,
 	device_set_pm_not_required(dev);
 	INIT_WORK(&cxlmd->detach_work, detach_memdev);
 	mutex_init(&cxlmd->attach_lock);
+	INIT_LIST_HEAD(&cxlmd->attach_functions);
 
 	cdev = &cxlmd->cdev;
 	cdev_init(cdev, fops);

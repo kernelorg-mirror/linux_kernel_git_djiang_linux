@@ -2571,10 +2571,12 @@ static struct cxl_region *to_cxl_region(struct device *dev)
 }
 
 /*
- * Return the memdev whose attach owner (a Type2 driver) uses @cxlr and has
- * not started its own teardown, with a reference held.
+ * If an attach owner (a Type2 driver) uses @cxlr, mark @cxlr defunct and
+ * return the owner's memdev with a reference held. *@detaching says whether
+ * the owner has started its own teardown.
  */
-static struct cxl_memdev *cxl_region_get_attach_owner(struct cxl_region *cxlr)
+static struct cxl_memdev *
+cxl_region_mark_defunct(struct cxl_region *cxlr, bool *detaching)
 {
 	struct cxl_region_params *p = &cxlr->params;
 
@@ -2587,66 +2589,29 @@ static struct cxl_memdev *cxl_region_get_attach_owner(struct cxl_region *cxlr)
 			continue;
 		cxlmd = cxled_to_memdev(cxled);
 		guard(mutex)(&cxlmd->attach_lock);
-		if (cxlmd->attach_region == cxlr && !cxlmd->attach_detaching)
-			return to_cxl_memdev(get_device(&cxlmd->dev));
+		if (cxlmd->attach_region != cxlr)
+			continue;
+		/*
+		 * Set under attach_lock, so a function can't start using the
+		 * region after the function detach below has been queued.
+		 */
+		set_bit(CXL_REGION_F_DEFUNCT, &cxlr->flags);
+		*detaching = cxlmd->attach_detaching;
+		return to_cxl_memdev(get_device(&cxlmd->dev));
 	}
 	return NULL;
 }
 
-static void unregister_region(struct cxl_region *cxlr)
+/* Drop one user of @cxlmd's region. The last one releases a defunct HPA. */
+static void cxl_memdev_put_attach_user(struct cxl_memdev *cxlmd)
 {
-	struct cxl_root_decoder *cxlrd = to_cxl_root_decoder(cxlr->dev.parent);
-	struct cxl_region_params *p = &cxlr->params;
-	struct cxl_memdev *owner;
-	int i;
-
-	xa_erase(&cxlrd->regions, cxlr->id);
-	device_del(&cxlr->dev);
-
-	/*
-	 * Now that region sysfs is shutdown, the parameter block is now
-	 * read-only, so no need to hold the region rwsem to access the
-	 * region parameters.
-	 */
-	owner = cxl_region_get_attach_owner(cxlr);
-	for (i = 0; i < p->interleave_ways; i++)
-		detach_target(cxlr, i);
-
-	cxlr->hpa_range = DEFINE_RANGE(0, -1);
-
-	if (owner) {
-		/*
-		 * The owner still uses the HPA. Keep it reserved until the
-		 * owner detaches, and schedule that detach.
-		 */
-		set_bit(CXL_REGION_F_DEFUNCT, &cxlr->flags);
-		dev_dbg(&owner->dev, "%s defunct until %s detaches\n",
-			dev_name(&cxlr->dev), dev_name(owner->dev.parent));
-		get_device(&owner->dev);
-		if (!schedule_cxl_memdev_detach(owner))
-			put_device(&owner->dev);
-		put_device(&owner->dev);
-	} else {
-		cxl_region_iomem_release(cxlr);
-	}
-	put_device(&cxlr->dev);
-}
-
-/**
- * cxl_memdev_release_attach_region - drop the attach owner's region
- * @cxlmd: memdev whose owner is detaching
- *
- * Called from the owner's teardown after its memdev is unregistered. Release
- * the HPA of a region that went defunct while the owner was bound, and drop
- * the owner's reference.
- */
-void cxl_memdev_release_attach_region(struct cxl_memdev *cxlmd)
-{
-	struct cxl_region *cxlr;
+	struct cxl_region *cxlr = NULL;
 
 	scoped_guard(mutex, &cxlmd->attach_lock) {
-		cxlr = cxlmd->attach_region;
-		cxlmd->attach_region = NULL;
+		if (--cxlmd->attach_users == 0) {
+			cxlr = cxlmd->attach_region;
+			cxlmd->attach_region = NULL;
+		}
 	}
 	if (!cxlr)
 		return;
@@ -2657,6 +2622,201 @@ void cxl_memdev_release_attach_region(struct cxl_memdev *cxlmd)
 			cxl_region_iomem_release(cxlr);
 	put_device(&cxlr->dev);
 }
+
+/*
+ * Function detach runs on its own unordered queue, not the ordered
+ * cxl_bus_wq, so one slow function can't hold up port rescans, memdev
+ * detaches or the other functions. Created in cxl_region_init().
+ */
+static struct workqueue_struct *cxl_attach_wq;
+
+struct cxl_region_user {
+	struct list_head node;
+	struct device *dev;
+	struct cxl_memdev *cxlmd;
+	struct work_struct detach_work;
+	bool queued;
+};
+
+static void cxl_region_user_detach_work(struct work_struct *work)
+{
+	struct cxl_region_user *fn =
+		container_of(work, struct cxl_region_user, detach_work);
+	struct cxl_memdev *cxlmd = fn->cxlmd;
+	struct device *dev = fn->dev;
+	bool registered;
+
+	/* @fn->node is emptied when the binding that registered @fn ends */
+	scoped_guard(mutex, &cxlmd->attach_lock)
+		registered = !list_empty(&fn->node);
+	if (registered)
+		device_release_driver(dev);
+	put_device(dev);
+	put_device(&cxlmd->dev);
+	kfree(fn);
+}
+
+static void cxl_memdev_queue_function_detach(struct cxl_memdev *cxlmd)
+{
+	struct cxl_region_user *fn;
+
+	guard(mutex)(&cxlmd->attach_lock);
+	list_for_each_entry(fn, &cxlmd->attach_functions, node) {
+		if (fn->queued)
+			continue;
+		fn->queued = true;
+		get_device(fn->dev);
+		get_device(&cxlmd->dev);
+		queue_work(cxl_attach_wq, &fn->detach_work);
+	}
+}
+
+static void unregister_region(struct cxl_region *cxlr)
+{
+	struct cxl_root_decoder *cxlrd = to_cxl_root_decoder(cxlr->dev.parent);
+	struct cxl_region_params *p = &cxlr->params;
+	struct cxl_memdev *owner;
+	bool detaching;
+	int i;
+
+	xa_erase(&cxlrd->regions, cxlr->id);
+	device_del(&cxlr->dev);
+
+	/*
+	 * Now that region sysfs is shutdown, the parameter block is now
+	 * read-only, so no need to hold the region rwsem to access the
+	 * region parameters.
+	 */
+	owner = cxl_region_mark_defunct(cxlr, &detaching);
+	for (i = 0; i < p->interleave_ways; i++)
+		detach_target(cxlr, i);
+
+	cxlr->hpa_range = DEFINE_RANGE(0, -1);
+
+	if (owner) {
+		/*
+		 * The owner and the device's other functions may still use
+		 * the HPA. Keep it reserved until the last of them detaches,
+		 * and schedule those detaches: each function, and the owner
+		 * unless it is already tearing down.
+		 */
+		dev_dbg(&owner->dev, "%s defunct until %s and its functions detach\n",
+			dev_name(&cxlr->dev), dev_name(owner->dev.parent));
+		cxl_memdev_queue_function_detach(owner);
+		if (!detaching) {
+			get_device(&owner->dev);
+			if (!schedule_cxl_memdev_detach(owner))
+				put_device(&owner->dev);
+		}
+		put_device(&owner->dev);
+	} else {
+		cxl_region_iomem_release(cxlr);
+	}
+	put_device(&cxlr->dev);
+}
+
+/**
+ * cxl_memdev_release_attach_region - drop the attach owner's use of its region
+ * @cxlmd: memdev whose owner is detaching
+ *
+ * Called from the owner's teardown after its memdev is unregistered. If the
+ * device's other functions still use the region, the last of them releases
+ * it instead.
+ */
+void cxl_memdev_release_attach_region(struct cxl_memdev *cxlmd)
+{
+	scoped_guard(mutex, &cxlmd->attach_lock)
+		if (!cxlmd->attach_region)
+			return;
+	cxl_memdev_put_attach_user(cxlmd);
+}
+
+static void cxl_region_user_release(void *data)
+{
+	struct cxl_region_user *fn = data;
+	struct cxl_memdev *cxlmd = fn->cxlmd;
+	bool queued;
+
+	scoped_guard(mutex, &cxlmd->attach_lock) {
+		list_del_init(&fn->node);
+		/* A queued detach owns @fn and frees it */
+		queued = fn->queued;
+	}
+	cxl_memdev_put_attach_user(cxlmd);
+	put_device(&cxlmd->dev);
+	if (!queued)
+		kfree(fn);
+}
+
+static int match_memdev_by_parent(struct device *dev, const void *data)
+{
+	return is_cxl_memdev(dev) && dev->parent == data;
+}
+
+/**
+ * devm_cxl_add_region_user - let another function use PF0's region
+ * @pf0: function that owns the CXL memdev and its attached region
+ * @dev: another function of the same device, calling from its probe
+ * @range: set to the region's HPA range on success
+ *
+ * Register @dev as a user of the region. The region's HPA stays reserved
+ * until @dev unbinds. If the region goes away while @dev is bound, @dev is
+ * unbound asynchronously. The registration is devm on @dev.
+ *
+ * Takes only the memdev's attach_lock. It never waits on a lock that region
+ * teardown holds.
+ *
+ * Return: 0 on success, -ENODEV if @pf0 is bound without a CXL memdev,
+ * -EPROBE_DEFER if @pf0 is still probing, has no usable region yet or its
+ * region is going away, or another error.
+ */
+int devm_cxl_add_region_user(struct device *pf0, struct device *dev,
+			     struct range *range)
+{
+	struct cxl_region_user *fn;
+	struct cxl_memdev *cxlmd;
+	struct cxl_region *cxlr;
+
+	if (!pf0 || !dev)
+		return -EINVAL;
+
+	struct device *mem_dev __free(put_device) =
+		bus_find_device(&cxl_bus_type, NULL, pf0, match_memdev_by_parent);
+	/*
+	 * A bound PF0 with no memdev doesn't use CXL. PF0 also reads as bound
+	 * while its unbind deletes the memdev, so a function probing then
+	 * binds without CXL.
+	 */
+	if (!mem_dev)
+		return device_is_bound(pf0) ? -ENODEV : -EPROBE_DEFER;
+	cxlmd = to_cxl_memdev(mem_dev);
+
+	fn = kzalloc_obj(*fn);
+	if (!fn)
+		return -ENOMEM;
+
+	scoped_guard(mutex, &cxlmd->attach_lock) {
+		cxlr = cxlmd->attach_region;
+		if (!cxlr || cxlmd->attach_detaching ||
+		    test_bit(CXL_REGION_F_DEFUNCT, &cxlr->flags)) {
+			kfree(fn);
+			return -EPROBE_DEFER;
+		}
+		fn->dev = dev;
+		fn->cxlmd = to_cxl_memdev(get_device(&cxlmd->dev));
+		INIT_WORK(&fn->detach_work, cxl_region_user_detach_work);
+		list_add_tail(&fn->node, &cxlmd->attach_functions);
+		cxlmd->attach_users++;
+		/* The HPA resource stays put while attach_users is non-zero */
+		*range = (struct range) {
+			.start = cxlr->params.res->start,
+			.end = cxlr->params.res->end,
+		};
+	}
+
+	return devm_add_action_or_reset(dev, cxl_region_user_release, fn);
+}
+EXPORT_SYMBOL_NS_GPL(devm_cxl_add_region_user, "CXL");
 
 static void endpoint_unregister_region(void *_cxlr)
 {
@@ -4250,7 +4410,7 @@ int cxl_memdev_attach_region(struct cxl_memdev *cxlmd)
 		return rc;
 
 	/*
-	 * The owner's reference, dropped when the owner detaches.
+	 * The owner's reference, dropped when the region's last user detaches.
 	 * unregister_region() erases @cxlr before it looks for an owner under
 	 * attach_lock, so a region missing here is already going away.
 	 */
@@ -4258,6 +4418,7 @@ int cxl_memdev_attach_region(struct cxl_memdev *cxlmd)
 		if (xa_load(&cxlr->cxlrd->regions, cxlr->id) != cxlr)
 			return -ENXIO;
 		cxlmd->attach_region = to_cxl_region(get_device(&cxlr->dev));
+		cxlmd->attach_users = 1;
 	}
 
 	attach->hpa_range = (struct range) {
@@ -4374,12 +4535,23 @@ static struct cxl_driver cxl_region_driver = {
 
 int cxl_region_init(void)
 {
-	return cxl_driver_register(&cxl_region_driver);
+	int rc;
+
+	cxl_attach_wq = alloc_workqueue("cxl_attach", WQ_UNBOUND, 0);
+	if (!cxl_attach_wq)
+		return -ENOMEM;
+
+	rc = cxl_driver_register(&cxl_region_driver);
+	if (rc)
+		destroy_workqueue(cxl_attach_wq);
+	return rc;
 }
 
 void cxl_region_exit(void)
 {
 	cxl_driver_unregister(&cxl_region_driver);
+	/* Drains pending function detaches */
+	destroy_workqueue(cxl_attach_wq);
 }
 
 MODULE_IMPORT_NS("CXL");

@@ -482,7 +482,7 @@ struct cxl_region_params {
 /*
  * The region was unregistered while its attach owner (a Type2 driver) was
  * still bound. Its HPA stays reserved, and stays decoded since attach
- * regions are CXL_REGION_F_LOCK, until the owner's detach releases it.
+ * regions are CXL_REGION_F_LOCK, until the region's last user detaches.
  */
 #define CXL_REGION_F_DEFUNCT 4
 
