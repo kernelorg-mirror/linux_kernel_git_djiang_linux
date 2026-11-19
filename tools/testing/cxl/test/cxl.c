@@ -492,9 +492,15 @@ static void cfmws_elc_update(struct acpi_cedt_cfmws *window, int index)
 	window->window_size = mock_auto_region_size * 2;
 }
 
+static bool type2_hostonly;
+
 static void update_type2_cfmws(void)
 {
 	memcpy(&mock_cedt.cfmws0.cfmws, &type2_cfmws0, sizeof(type2_cfmws0));
+	/* Let the window also allow Type3, which exposes delete_region */
+	if (type2_hostonly)
+		mock_cedt.cfmws0.cfmws.restrictions |=
+			ACPI_CEDT_CFMWS_RESTRICT_HOSTONLYMEM;
 }
 
 static int populate_cedt(void)
@@ -2560,6 +2566,8 @@ module_param(fail_autoassemble, bool, 0444);
 MODULE_PARM_DESC(fail_autoassemble, "Simulate missing member of an auto-region");
 module_param(type2_test, bool, 0444);
 MODULE_PARM_DESC(type2_test, "Enable type 2 support testing");
+module_param(type2_hostonly, bool, 0444);
+MODULE_PARM_DESC(type2_hostonly, "Type 2 window also allows type 3");
 module_param(mock_zero_size_decoders, bool, 0444);
 MODULE_PARM_DESC(mock_zero_size_decoders,
 		 "Mock committed, locked, empty decoders under host-bridge0");
