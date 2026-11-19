@@ -26,9 +26,13 @@
  * PCIe topology.
  */
 
-static void schedule_detach(void *cxlmd)
+static void schedule_detach(void *data)
 {
-	schedule_cxl_memdev_detach(cxlmd);
+	struct cxl_memdev *cxlmd = data;
+
+	/* The detach work drops one reference per run */
+	if (!schedule_cxl_memdev_detach(cxlmd))
+		put_device(&cxlmd->dev);
 }
 
 static int discover_region(struct device *dev, void *unused)
