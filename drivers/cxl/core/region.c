@@ -2559,10 +2559,34 @@ static struct cxl_region *to_cxl_region(struct device *dev)
 	return container_of(dev, struct cxl_region, dev);
 }
 
+/*
+ * Return the memdev whose attach owner (a Type2 driver) uses @cxlr and has
+ * not started its own teardown, with a reference held.
+ */
+static struct cxl_memdev *cxl_region_get_attach_owner(struct cxl_region *cxlr)
+{
+	struct cxl_region_params *p = &cxlr->params;
+
+	guard(rwsem_read)(&cxl_rwsem.region);
+	for (int i = 0; i < p->interleave_ways; i++) {
+		struct cxl_endpoint_decoder *cxled = p->targets[i];
+		struct cxl_memdev *cxlmd;
+
+		if (!cxled)
+			continue;
+		cxlmd = cxled_to_memdev(cxled);
+		guard(mutex)(&cxlmd->attach_lock);
+		if (cxlmd->attach_region == cxlr && !cxlmd->attach_detaching)
+			return to_cxl_memdev(get_device(&cxlmd->dev));
+	}
+	return NULL;
+}
+
 static void unregister_region(struct cxl_region *cxlr)
 {
 	struct cxl_root_decoder *cxlrd = to_cxl_root_decoder(cxlr->dev.parent);
 	struct cxl_region_params *p = &cxlr->params;
+	struct cxl_memdev *owner;
 	int i;
 
 	xa_erase(&cxlrd->regions, cxlr->id);
@@ -2573,12 +2597,53 @@ static void unregister_region(struct cxl_region *cxlr)
 	 * read-only, so no need to hold the region rwsem to access the
 	 * region parameters.
 	 */
+	owner = cxl_region_get_attach_owner(cxlr);
 	for (i = 0; i < p->interleave_ways; i++)
 		detach_target(cxlr, i);
 
 	cxlr->hpa_range = DEFINE_RANGE(0, -1);
 
-	cxl_region_iomem_release(cxlr);
+	if (owner) {
+		/*
+		 * The owner still uses the HPA. Keep it reserved until the
+		 * owner detaches, and schedule that detach.
+		 */
+		set_bit(CXL_REGION_F_DEFUNCT, &cxlr->flags);
+		dev_dbg(&owner->dev, "%s defunct until %s detaches\n",
+			dev_name(&cxlr->dev), dev_name(owner->dev.parent));
+		get_device(&owner->dev);
+		if (!schedule_cxl_memdev_detach(owner))
+			put_device(&owner->dev);
+		put_device(&owner->dev);
+	} else {
+		cxl_region_iomem_release(cxlr);
+	}
+	put_device(&cxlr->dev);
+}
+
+/**
+ * cxl_memdev_release_attach_region - drop the attach owner's region
+ * @cxlmd: memdev whose owner is detaching
+ *
+ * Called from the owner's teardown after its memdev is unregistered. Release
+ * the HPA of a region that went defunct while the owner was bound, and drop
+ * the owner's reference.
+ */
+void cxl_memdev_release_attach_region(struct cxl_memdev *cxlmd)
+{
+	struct cxl_region *cxlr;
+
+	scoped_guard(mutex, &cxlmd->attach_lock) {
+		cxlr = cxlmd->attach_region;
+		cxlmd->attach_region = NULL;
+	}
+	if (!cxlr)
+		return;
+
+	/* Serializes against an in-flight unregister_region() */
+	scoped_guard(mutex, &cxlr->cxlrd->regions_lock)
+		if (test_and_clear_bit(CXL_REGION_F_DEFUNCT, &cxlr->flags))
+			cxl_region_iomem_release(cxlr);
 	put_device(&cxlr->dev);
 }
 
@@ -4161,12 +4226,28 @@ int cxl_memdev_attach_region(struct cxl_memdev *cxlmd)
 		return -ENXIO;
 	}
 
+	/* A previous region is defunct until this memdev's owner detaches */
+	scoped_guard(mutex, &cxlmd->attach_lock)
+		if (cxlmd->attach_region)
+			return -EBUSY;
+
 	/* Only teardown regions that pass validation, ignore the rest */
 	get_device(&cxlr->dev);
 	rc = devm_add_action_or_reset(&endpoint->dev,
 				      endpoint_unregister_region, cxlr);
 	if (rc)
 		return rc;
+
+	/*
+	 * The owner's reference, dropped when the owner detaches.
+	 * unregister_region() erases @cxlr before it looks for an owner under
+	 * attach_lock, so a region missing here is already going away.
+	 */
+	scoped_guard(mutex, &cxlmd->attach_lock) {
+		if (xa_load(&cxlr->cxlrd->regions, cxlr->id) != cxlr)
+			return -ENXIO;
+		cxlmd->attach_region = to_cxl_region(get_device(&cxlr->dev));
+	}
 
 	attach->hpa_range = (struct range) {
 		.start = cxlr->params.res->start,

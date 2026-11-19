@@ -53,6 +53,7 @@ u64 cxl_dpa_to_hpa(struct cxl_region *cxlr, const struct cxl_memdev *cxlmd,
 int devm_cxl_add_dax_region(struct cxl_region *cxlr);
 int devm_cxl_add_pmem_region(struct cxl_region *cxlr);
 void kill_regions(struct cxl_root_decoder *cxlrd);
+void cxl_memdev_release_attach_region(struct cxl_memdev *cxlmd);
 
 #else
 static inline u64 cxl_dpa_to_hpa(struct cxl_region *cxlr,
@@ -83,6 +84,7 @@ static inline void cxl_region_exit(void)
 {
 }
 static inline void kill_regions(struct cxl_root_decoder *cxlrd) { };
+static inline void cxl_memdev_release_attach_region(struct cxl_memdev *cxlmd) { }
 #define CXL_REGION_ATTR(x) NULL
 #define CXL_REGION_TYPE(x) NULL
 #define SET_CXL_REGION_ATTR(x)
